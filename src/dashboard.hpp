@@ -314,15 +314,9 @@ class Renderer {
                {"Ctrl+d", "Exit shell"}};
     } else if (view.tab == 2) {
       section = "Media / Wave";
-#ifdef __ANDROID__
-      local = {{"j", "Next station"}, {"k", "Previous station"},
-               {"Enter", "Open in Android player"}, {"a", "Add station"}};
-      note = "Use Android media controls to pause or stop";
-#else
       local = {{"j", "Next station"}, {"k", "Previous station"},
                {"Enter", "Play / stop"}, {"a", "Add station"},
                {"s", "Stop playback"}};
-#endif
     } else if (view.tab == 3 && view.notes_section == 0) {
       section = "Notes / Text";
       local = {{"Alt+h", "Previous tab"}, {"Alt+l", "Next tab"},

@@ -50,8 +50,8 @@ if [ "$termux" = true ]; then
         exit 1
     fi
     printf '%s\n' 'Installing Cyber Deck and module dependencies in Termux...'
-    pkg install -y clang cmake pkg-config ncurses libvterm nano elinks
-    for program in clang cmake pkg-config nano elinks; do
+    pkg install -y clang cmake pkg-config ncurses libvterm nano elinks mpv
+    for program in clang cmake pkg-config nano elinks mpv; do
         if ! command -v "$program" >/dev/null 2>&1; then
             printf 'Cyber Deck: required Termux program is missing after installation: %s\n' "$program" >&2
             exit 1
@@ -62,19 +62,7 @@ if [ "$termux" = true ]; then
     cmake --build "$repo_dir/build"
     printf 'Cyber Deck is ready: %s\n' "$repo_dir/build/cyber-deck"
     printf '%s\n' 'Run it from Termux with: ./build/cyber-deck'
-    if command -v pm >/dev/null 2>&1 && pm path is.xyz.mpv >/dev/null 2>&1; then
-        printf '%s\n' 'Wave: mpv-android is installed. Enable Background playback and Play new files immediately in its settings.'
-    else
-        printf '%s\n' 'Wave needs the separate mpv-android app for Android lock-screen controls.'
-        printf '%s\n' 'Install its APK from: https://github.com/mpv-android/mpv-android/releases/latest'
-        printf '%s\n' 'Choose arm64-v8a for most phones, or universal if unsure.'
-        printf '%s\n' 'Then enable Background playback and Play new files immediately in mpv-android settings.'
-        if command -v termux-open-url >/dev/null 2>&1; then
-            printf '%s\n' 'Opening the official mpv-android download page...'
-            termux-open-url 'https://github.com/mpv-android/mpv-android/releases/latest' || \
-                printf '%s\n' 'Could not open the browser; use the link above.' >&2
-        fi
-    fi
+    printf '%s\n' 'Wave plays through mpv inside Termux; Android lock-screen media controls are unavailable.'
     exit 0
 fi
 

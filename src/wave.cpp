@@ -149,26 +149,16 @@ bool WaveBackend::tick() {
   if (result == 0 || (result < 0 && errno != ECHILD)) return false;
   active_pid_ = -1;
   view_.playing = kNoWaveStation;
-#ifdef __ANDROID__
-  view_.status = WIFEXITED(code) && WEXITSTATUS(code) == 0
-                     ? "Opened in mpv-android; use Android media controls"
-                     : "Android player launch failed; check app installation";
-#else
   view_.status = WIFEXITED(code) && WEXITSTATUS(code) == 0 ? "Stream ended" :
                  WIFEXITED(code) ? "mpv exited with code " + std::to_string(WEXITSTATUS(code)) :
                                    "Playback stopped";
-#endif
   return true;
 }
 
 void WaveBackend::stop() {
   terminate_active();
   view_.playing = kNoWaveStation;
-#ifdef __ANDROID__
-  view_.status = "Use Android media controls to stop playback";
-#else
   view_.status = "Stopped";
-#endif
 }
 
 void WaveBackend::toggle(size_t index) {
@@ -194,35 +184,19 @@ void WaveBackend::toggle(size_t index) {
     view_.status = "Cannot prepare mpv: " + std::string(std::strerror(error));
     return;
   }
-#ifdef __ANDROID__
-  std::vector<char *> args = {
-      const_cast<char *>("am"), const_cast<char *>("start"),
-      const_cast<char *>("-a"), const_cast<char *>("android.intent.action.VIEW"),
-      const_cast<char *>("-t"), const_cast<char *>("audio/*"),
-      const_cast<char *>("-p"), const_cast<char *>("is.xyz.mpv"),
-      const_cast<char *>("--es"), const_cast<char *>("title"),
-      const_cast<char *>(stations_[index].name.c_str()),
-      const_cast<char *>("-d"), const_cast<char *>(stations_[index].url.c_str()),
-      nullptr};
-  pid_t pid = -1;
-  error = ::posix_spawnp(&pid, "am", &actions, nullptr, args.data(), environ);
-  ::posix_spawn_file_actions_destroy(&actions);
-  if (error != 0) {
-    view_.status = "Cannot launch Android player: " + std::string(std::strerror(error));
-    return;
-  }
-  active_pid_ = pid;
-  view_.status = "Opening station in mpv-android...";
-#else
+#ifndef __ANDROID__
   const std::string script = mpris_script();
   const std::string script_option = "--script=" + script;
+#endif
   const std::string title_option = "--force-media-title=" + stations_[index].name;
   std::vector<char *> args = {
       const_cast<char *>("mpv"), const_cast<char *>("--no-video"),
       const_cast<char *>("--force-window=no"), const_cast<char *>("--terminal=no"),
       const_cast<char *>("--load-scripts=no"), const_cast<char *>("--scripts="),
       const_cast<char *>("--really-quiet")};
+#ifndef __ANDROID__
   if (!script.empty()) args.push_back(const_cast<char *>(script_option.c_str()));
+#endif
   args.push_back(const_cast<char *>(title_option.c_str()));
   args.push_back(const_cast<char *>("--"));
   args.push_back(const_cast<char *>(stations_[index].url.c_str()));
@@ -237,6 +211,9 @@ void WaveBackend::toggle(size_t index) {
   }
   active_pid_ = pid;
   view_.playing = index;
+#ifdef __ANDROID__
+  view_.status = "mpv running in Termux";
+#else
   view_.status = script.empty() ? "mpv running; no Linux media status (mpv-mpris missing)"
                                 : "mpv running";
 #endif
