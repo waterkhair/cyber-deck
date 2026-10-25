@@ -51,6 +51,9 @@ add_executable(cyber-deck
   src/wave.cpp
   src/wave.hpp
   src/web.hpp)
+# Termux's ncurses package includes wide-character support, but Android's
+# default feature macros do not expose cchar_t and the wide curses functions.
+target_compile_definitions(cyber-deck PRIVATE NCURSES_WIDECHAR=1)
 target_include_directories(cyber-deck PRIVATE ${CURSES_INCLUDE_DIRS} ${VTERM_INCLUDE_DIR})
 target_link_libraries(cyber-deck PRIVATE ${CURSES_LIBRARIES} ${VTERM_LIBRARY} ${PTY_LIBRARY} Threads::Threads)
 if(CYBERDECK_ENABLE_LINUX_INTEGRATIONS AND LIBNM_FOUND)
