@@ -348,21 +348,35 @@ class Renderer {
                {"Enter", "Apply theme"}};
     } else if (view.tab == 5 && view.settings_selection == 1) {
       section = "Settings / WiFi";
-      local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
-               {"j", "Next network"}, {"k", "Previous network"},
-               {"Enter", "Connect"}, {"r", "Scan"},
-               {"d", "Disconnect"}, {"w", "Power on/off"},
-               {"p", "Change password"}, {"f", "Forget network"}};
+      if (view.wifi.read_only) {
+        local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
+                 {"j", "Next network"}, {"k", "Previous network"},
+                 {"r", "Refresh info"}};
+        note = "Android WiFi information only; scans may be cached";
+      } else {
+        local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
+                 {"j", "Next network"}, {"k", "Previous network"},
+                 {"Enter", "Connect"}, {"r", "Scan"},
+                 {"d", "Disconnect"}, {"w", "Power on/off"},
+                 {"p", "Change password"}, {"f", "Forget network"}};
+      }
     } else if (view.tab == 5 && view.audio_picker) {
       section = "Settings / Audio picker";
       local = {{"j", "Next device"}, {"k", "Previous device"},
                {"Enter", "Use device"}};
     } else if (view.tab == 5 && view.settings_selection == 2) {
       section = "Settings / Audio";
-      local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
-               {"j", "Select input"}, {"k", "Select output"},
-               {"Enter", "Choose device"}, {"Left", "Volume down"},
-               {"Right", "Volume up"}, {"r", "Refresh"}};
+      if (view.audio.volume_only) {
+        local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
+                 {"Left", "Music volume down"}, {"Right", "Music volume up"},
+                 {"r", "Refresh"}};
+        note = "Android chooses audio input and output";
+      } else {
+        local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
+                 {"j", "Select input"}, {"k", "Select output"},
+                 {"Enter", "Choose device"}, {"Left", "Volume down"},
+                 {"Right", "Volume up"}, {"r", "Refresh"}};
+      }
     } else if (view.tab == 5 && view.settings_selection == 4) {
       section = "Settings / Web";
       local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
@@ -371,12 +385,18 @@ class Renderer {
       note = "ELinks cannot identify necessary cookies";
     } else if (view.tab == 5) {
       section = "Settings / Bluetooth";
-      local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
-               {"j", "Next device"}, {"k", "Previous device"},
-               {"Enter", "Connect / pair"}, {"r", "Scan"},
-               {"w", "Power on/off"}, {"p", "Pair"},
-               {"d", "Disconnect"}, {"t", "Trust / untrust"},
-               {"f", "Forget device"}};
+      if (view.bluetooth.info_only) {
+        local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
+                 {"r", "Refresh audio route"}};
+        note = "Adapter and paired devices are unavailable through Termux:API";
+      } else {
+        local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
+                 {"j", "Next device"}, {"k", "Previous device"},
+                 {"Enter", "Connect / pair"}, {"r", "Scan"},
+                 {"w", "Power on/off"}, {"p", "Pair"},
+                 {"d", "Disconnect"}, {"t", "Trust / untrust"},
+                 {"f", "Forget device"}};
+      }
     }
     if (view.help_dialog == HelpDialog::None) {
       if (!view.audio_picker && !view.menu_focused) {
@@ -751,6 +771,10 @@ class Renderer {
     for (size_t index = 0; index < 2; ++index) {
       const int row = top + 2 + static_cast<int>(index);
       if (row >= bottom) break;
+      if (view.audio.volume_only && index == 1) {
+        draw_text(row, left, cols, "Input: managed by Android", muted_style());
+        break;
+      }
       const auto &devices = index == 0 ? view.audio.outputs : view.audio.inputs;
       const auto selected = std::find_if(devices.begin(), devices.end(),
           [](const AudioDevice &device) { return device.is_default; });
@@ -760,7 +784,8 @@ class Renderer {
       if (focused) draw_text(row, left, cols, "", style, true);
       const bool audio_icon = ghostty_ && cols >= 3;
       const int icon_width = audio_icon ? 3 : 0;
-      const std::string label = index == 0 ? "[Output] " : "[Input] ";
+      const std::string label = view.audio.volume_only ? "[Music] " :
+                                index == 0 ? "[Output] " : "[Input] ";
       std::string suffix;
       if (selected != devices.end()) {
         const unsigned volume = std::min(selected->volume, 100u);
@@ -797,6 +822,13 @@ class Renderer {
 
   void draw_bluetooth(const ChromeView &view, int pane_rows, int left, int top, int cols) {
     const int bottom = top + pane_rows;
+    if (view.bluetooth.info_only) {
+      if (top < bottom) draw_field(top, left, cols, "Audio route", view.bluetooth.status,
+                                   view.bluetooth.available ? body_style() : muted_style());
+      if (top + 2 < bottom)
+        draw_text(top + 2, left, cols, "Adapter and paired devices: unavailable", muted_style());
+      return;
+    }
     if (top < bottom) draw_field(top, left, cols, "Power",
         view.bluetooth.available ? (view.bluetooth.powered ? "On" : "Off") : "Unavailable",
         view.bluetooth.available ? body_style() : muted_style());
@@ -846,10 +878,13 @@ class Renderer {
     if (top + 2 < bottom) draw_field(top + 2, left, cols, "Status",
         view.wifi.status + (view.wifi.scanning ? "  scanning" : ""),
         view.wifi.available ? body_style() : muted_style());
-    const int list_top = top + 4;
+    if (view.wifi.read_only && !view.wifi.details.empty() && top + 3 < bottom)
+      draw_text(top + 3, left, cols, view.wifi.details, muted_style());
+    const int list_top = top + (view.wifi.read_only && !view.wifi.details.empty() ? 5 : 4);
     const int list_bottom = bottom;
     if (view.wifi.networks.empty()) {
       if (list_top < list_bottom) draw_text(list_top, left, cols,
+          view.wifi.read_only ? "No scan results; press r to refresh" :
           !view.wifi.enabled ? "Enable WiFi to scan for networks" : "No networks found; press r to scan",
           muted_style());
       return;

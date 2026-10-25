@@ -31,6 +31,7 @@ struct BluetoothSnapshot {
   std::string prompt_device;
   unsigned prompt_passkey = 0;
   bool prompt_has_passkey = false;
+  bool info_only = false;
 };
 
 class BluetoothBackend {

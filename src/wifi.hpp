@@ -32,6 +32,8 @@ struct WifiSnapshot {
   std::string connected_ssid;
   std::string status = "NetworkManager unavailable";
   std::vector<WifiNetwork> networks;
+  bool read_only = false;
+  std::string details;
 };
 
 class WifiBackend {
