@@ -67,7 +67,13 @@ if [ "$termux" = true ]; then
     else
         printf '%s\n' 'Wave needs the separate mpv-android app for Android lock-screen controls.'
         printf '%s\n' 'Install its APK from: https://github.com/mpv-android/mpv-android/releases/latest'
+        printf '%s\n' 'Choose arm64-v8a for most phones, or universal if unsure.'
         printf '%s\n' 'Then enable Background playback and Play new files immediately in mpv-android settings.'
+        if command -v termux-open-url >/dev/null 2>&1; then
+            printf '%s\n' 'Opening the official mpv-android download page...'
+            termux-open-url 'https://github.com/mpv-android/mpv-android/releases/latest' || \
+                printf '%s\n' 'Could not open the browser; use the link above.' >&2
+        fi
     fi
     exit 0
 fi

@@ -152,7 +152,7 @@ bool WaveBackend::tick() {
 #ifdef __ANDROID__
   view_.status = WIFEXITED(code) && WEXITSTATUS(code) == 0
                      ? "Opened in mpv-android; use Android media controls"
-                     : "Cannot open mpv-android; install its Android app";
+                     : "Android player launch failed; check app installation";
 #else
   view_.status = WIFEXITED(code) && WEXITSTATUS(code) == 0 ? "Stream ended" :
                  WIFEXITED(code) ? "mpv exited with code " + std::to_string(WEXITSTATUS(code)) :
