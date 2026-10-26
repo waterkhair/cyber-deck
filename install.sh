@@ -16,7 +16,7 @@ case "${1:-}" in
     --desktop) desktop=true ;;
     --help|-h)
         printf '%s\n' 'usage: ./install.sh [--desktop]'
-        printf '%s\n' 'Installs dependencies and builds Cyber Deck. In Termux, builds the Android-compatible core.'
+        printf '%s\n' 'Installs dependencies and builds Cyber Deck. In Termux, builds the experimental core TUI.'
         printf '%s\n' 'On a configured Hyprland desktop, also installs its shortcut.'
         printf '%s\n' 'Use --desktop to require desktop setup when no Hyprland config is detected.'
         exit 0
@@ -50,21 +50,18 @@ if [ "$termux" = true ]; then
         exit 1
     fi
     printf '%s\n' 'Installing Cyber Deck and module dependencies in Termux...'
-    pkg install -y clang cmake pkg-config ncurses libvterm json-c termux-api nano elinks mpv
-    for program in clang cmake pkg-config nano elinks mpv termux-volume termux-wifi-connectioninfo termux-wifi-scaninfo termux-audio-info; do
+    pkg install -y clang cmake pkg-config ncurses libvterm nano elinks mpv
+    for program in clang cmake pkg-config nano elinks mpv; do
         if ! command -v "$program" >/dev/null 2>&1; then
             printf 'Cyber Deck: required Termux program is missing after installation: %s\n' "$program" >&2
             exit 1
         fi
     done
     cmake -S "$repo_dir" -B "$repo_dir/build" \
-        -DCYBERDECK_ENABLE_LINUX_INTEGRATIONS=OFF \
-        -DCYBERDECK_ENABLE_TERMUX_INTEGRATIONS=ON
+        -DCYBERDECK_ENABLE_LINUX_INTEGRATIONS=OFF
     cmake --build "$repo_dir/build"
     printf 'Cyber Deck is ready: %s\n' "$repo_dir/build/cyber-deck"
     printf '%s\n' 'Run it from Termux with: ./build/cyber-deck'
-    printf '%s\n' 'WiFi, audio, and Bluetooth audio information also need the Termux:API Android add-on installed from the same source as Termux.'
-    printf '%s\n' 'Termux:API add-on: https://github.com/termux/termux-api#installation'
     printf '%s\n' 'Wave plays through mpv inside Termux; Android lock-screen media controls are unavailable.'
     exit 0
 fi
@@ -117,8 +114,7 @@ for library in libnm libpulse gio-2.0; do
 done
 
 cmake -S "$repo_dir" -B "$repo_dir/build" \
-    -DCYBERDECK_ENABLE_LINUX_INTEGRATIONS=ON \
-    -DCYBERDECK_ENABLE_TERMUX_INTEGRATIONS=OFF
+    -DCYBERDECK_ENABLE_LINUX_INTEGRATIONS=ON
 cmake --build "$repo_dir/build"
 
 if [ "$desktop" = true ]; then

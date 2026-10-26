@@ -20,7 +20,6 @@ struct AudioSnapshot {
   std::string status = "Audio unavailable";
   std::vector<AudioDevice> outputs;
   std::vector<AudioDevice> inputs;
-  bool volume_only = false;
 };
 
 class AudioBackend {

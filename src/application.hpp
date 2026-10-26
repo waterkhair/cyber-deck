@@ -398,7 +398,7 @@ class Application {
     wifi_page_ = section == 1;
     audio_page_ = section == 2;
     bluetooth_page_ = section == 3;
-    if (wifi_page_) { wifi_view_ = wifi_.snapshot(); wifi_.scan(); }
+    if (wifi_page_) wifi_.scan();
     if (audio_page_) { audio_view_ = audio_.snapshot(); audio_.refresh(); }
     if (bluetooth_page_) { bluetooth_view_ = bluetooth_.snapshot(); bluetooth_.refresh(); }
     notice_.clear();
@@ -1009,18 +1009,6 @@ class Application {
         (!key.special && key.value == 'j');
     const bool left = key.special && key.value == KEY_LEFT;
     const bool right = key.special && key.value == KEY_RIGHT;
-    if (audio_view_.volume_only) {
-      if (!key.special && key.value == 'r') audio_.refresh();
-      else if ((left || right) && audio_view_.available && !audio_view_.outputs.empty()) {
-        auto &music = audio_view_.outputs.front();
-        const unsigned volume = std::min(music.volume, 100u);
-        music.volume = right ? std::min(volume + 5, 100u) :
-                               (volume >= 5 ? volume - 5 : 0);
-        audio_.set_volume(true, music.name, music.volume);
-      }
-      ui_dirty_ = true;
-      return;
-    }
     const bool output = audio_selection_ == 0;
     auto &devices = output ? audio_view_.outputs : audio_view_.inputs;
     if (!key.special && key.value == 27) {
@@ -1116,11 +1104,6 @@ class Application {
         (!key.special && key.value == 'k');
     const bool down = (key.special && key.value == KEY_DOWN) ||
         (!key.special && key.value == 'j');
-    if (bluetooth_view_.info_only) {
-      if (!key.special && key.value == 'r') bluetooth_.refresh();
-      ui_dirty_ = true;
-      return;
-    }
     if (!key.special && key.value == 27) {
       if (bluetooth_view_.discovering) bluetooth_.set_discovering(false);
       menu_focused_ = true;
@@ -1175,18 +1158,6 @@ class Application {
   void handle_wifi_key(Key key) {
     const bool enter = (key.special && key.value == KEY_ENTER) ||
         (!key.special && (key.value == 10 || key.value == 13));
-    if (wifi_view_.read_only) {
-      if ((key.special && key.value == KEY_UP) || (!key.special && key.value == 'k')) {
-        if (wifi_selection_ > 0) --wifi_selection_;
-      } else if ((key.special && key.value == KEY_DOWN) || (!key.special && key.value == 'j')) {
-        if (wifi_selection_ + 1 < wifi_view_.networks.size()) ++wifi_selection_;
-      } else if (!key.special && key.value == 'r') wifi_.scan();
-      else if (enter || (!key.special &&
-               (key.value == 'd' || key.value == 'w' || key.value == 'p' || key.value == 'f')))
-        notice_ = "WiFi management is unavailable through Termux:API";
-      ui_dirty_ = true;
-      return;
-    }
     if (wifi_forget_prompt_) {
       if (move_modal_choice(key, true)) return;
       if (enter && modal_accept_selected_) accept_confirmation();
