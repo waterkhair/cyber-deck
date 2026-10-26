@@ -50,7 +50,7 @@ if [ "$termux" = true ]; then
         exit 1
     fi
     printf '%s\n' 'Installing Cyber Deck and module dependencies in Termux...'
-    pkg install -y clang cmake pkg-config ncurses libvterm nano elinks mpv
+    pkg install -y clang cmake pkg-config ncurses libvterm libcurl nano elinks mpv
     for program in clang cmake pkg-config nano elinks mpv; do
         if ! command -v "$program" >/dev/null 2>&1; then
             printf 'Cyber Deck: required Termux program is missing after installation: %s\n' "$program" >&2
@@ -72,13 +72,13 @@ if ! command -v sudo >/dev/null 2>&1; then
 fi
 
 if command -v pacman >/dev/null 2>&1; then
-    set -- gcc cmake pkgconf ncurses libvterm libnm libpulse glib2 \
+    set -- gcc cmake pkgconf ncurses libvterm curl libnm libpulse glib2 \
         networkmanager bluez nano elinks mpv mpv-mpris
     if [ "$desktop" = true ]; then set -- "$@" ghostty; fi
     printf '%s\n' 'Installing Cyber Deck packages with pacman...'
     sudo pacman -S --needed "$@"
 elif command -v apt-get >/dev/null 2>&1; then
-    set -- g++ cmake pkg-config libncurses-dev libvterm-dev \
+    set -- g++ cmake pkg-config libncurses-dev libvterm-dev libcurl4-openssl-dev \
         libnm-dev libpulse-dev libglib2.0-dev \
         network-manager bluez nano elinks mpv mpv-mpris
     printf '%s\n' 'Updating package lists...'

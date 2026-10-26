@@ -12,6 +12,7 @@ set(CURSES_NEED_NCURSES TRUE)
 set(CURSES_NEED_WIDE TRUE)
 find_package(Curses REQUIRED)
 find_package(Threads REQUIRED)
+find_package(CURL QUIET)
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND AND CYBERDECK_ENABLE_LINUX_INTEGRATIONS)
   pkg_check_modules(LIBNM QUIET IMPORTED_TARGET libnm>=1.24)
@@ -48,6 +49,7 @@ add_executable(cyber-deck
   src/system.hpp
   src/terminal.hpp
   src/theme.hpp
+  src/weather.hpp
   src/wave.cpp
   src/wave.hpp
   src/web.hpp)
@@ -56,6 +58,13 @@ add_executable(cyber-deck
 target_compile_definitions(cyber-deck PRIVATE NCURSES_WIDECHAR=1)
 target_include_directories(cyber-deck PRIVATE ${CURSES_INCLUDE_DIRS} ${VTERM_INCLUDE_DIR})
 target_link_libraries(cyber-deck PRIVATE ${CURSES_LIBRARIES} ${VTERM_LIBRARY} ${PTY_LIBRARY} Threads::Threads)
+if(CURL_FOUND)
+  target_sources(cyber-deck PRIVATE src/weather.cpp)
+  target_link_libraries(cyber-deck PRIVATE CURL::libcurl)
+else()
+  target_sources(cyber-deck PRIVATE src/weather_stub.cpp)
+  message(STATUS "libcurl not found: dashboard weather will be unavailable")
+endif()
 if(CYBERDECK_ENABLE_LINUX_INTEGRATIONS AND LIBNM_FOUND)
   target_sources(cyber-deck PRIVATE src/wifi.cpp src/wifi.hpp)
   target_link_libraries(cyber-deck PRIVATE PkgConfig::LIBNM)

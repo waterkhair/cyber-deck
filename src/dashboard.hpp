@@ -7,6 +7,7 @@
 #include "system.hpp"
 #include "terminal.hpp"
 #include "theme.hpp"
+#include "weather.hpp"
 #include "wifi.hpp"
 #include "wave.hpp"
 #include "web.hpp"
@@ -20,8 +21,8 @@ namespace cyberdeck {
 
 constexpr std::array<const char *, 6> kTabs = {
     "Dashboard", "Terminal", "Media", "Notes", "Web", "Settings"};
-constexpr std::array<const char *, 5> kSettingsSections = {
-    "Theme", "Network", "Audio", "Bluetooth", "Web"};
+constexpr std::array<const char *, 6> kSettingsSections = {
+    "Theme", "Network", "Audio", "Bluetooth", "Web", "Weather"};
 enum class HelpDialog { None, Confirm, Password, TextEntry };
 
 struct ChromeView {
@@ -57,6 +58,7 @@ struct ChromeView {
   bool note_editing = false;
   bool web_browsing = false;
   SystemOverview overview;
+  WeatherSnapshot weather;
   std::array<bool, kMaxSessions> terminals{};
   size_t active_terminal = 0;
 };
@@ -370,6 +372,10 @@ class Renderer {
                {"j", "Next option"}, {"k", "Previous option"},
                {"Enter", "Apply / toggle option"}};
       note = "ELinks cannot identify necessary cookies";
+    } else if (view.tab == 5 && view.settings_selection == 5) {
+      section = "Settings / Weather";
+      local = {{"Alt+h", "Previous section"}, {"Enter", "Set city"},
+               {"r", "Refresh weather"}};
     } else if (view.tab == 5) {
       section = "Settings / Bluetooth";
       local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
@@ -709,30 +715,47 @@ class Renderer {
     const std::string battery_detail = battery_separator == std::string::npos ?
         (battery_value == "Not detected" ? "No system battery" : "Power source") :
         view.overview.battery.substr(battery_separator + 2);
+    const std::string weather_value = view.weather.temperature.empty() ?
+        view.weather.status : view.weather.temperature;
+    const std::string weather_detail = !view.weather.condition.empty() ? view.weather.condition :
+        view.weather.location.empty() ? "Settings / Weather" :
+        view.weather.loading ? "Fetching current weather" :
+        view.weather.status == "City not found" ? "Check city name" : "Check network";
 
     if (cols >= 44 && pane_rows >= 11) {
       const int width = std::min(cols - 4, 72);
       const int col = left + (cols - width) / 2;
       const int row = top + (pane_rows - 11) / 2;
       const int left_width = (width - 2) / 2;
-      draw_widget(row, col, width, "NETWORK", network_value, network_detail,
-                  network_value == "Offline" ? "Disconnected" : "Connected");
-      draw_widget(row + 6, col, left_width, "CLOCK", clock, date);
-      draw_widget(row + 6, col + left_width + 2, width - left_width - 2,
-                  "BATTERY", battery_value, battery_detail);
+      const int right_col = col + left_width + 2;
+      const int right_width = width - left_width - 2;
+      draw_widget(row, col, left_width, "CLOCK", clock, date);
+      draw_widget(row, right_col, right_width, "WEATHER", weather_value, weather_detail);
+      if (!view.weather.location.empty())
+        draw_text(row + 1, right_col + 3, right_width - 6,
+                  view.weather.location, section_style());
+      draw_widget(row + 6, col, left_width, "NETWORK", network_value, network_detail);
+      draw_text(row + 7, col + 3, left_width - 6,
+                network_value == "Offline" ? "Disconnected" : "Connected", section_style());
+      draw_widget(row + 6, right_col, right_width, "BATTERY", battery_value, battery_detail);
       draw_battery_meter(row + 6, col + left_width + 2, width - left_width - 2,
                          battery_value);
-    } else if (cols >= 16 && pane_rows >= 17) {
-      const int row = top + (pane_rows - 17) / 2;
-      draw_widget(row, left, cols, "NETWORK", network_value, network_detail,
-                  network_value == "Offline" ? "Disconnected" : "Connected");
-      draw_widget(row + 6, left, cols, "CLOCK", clock, date);
-      draw_widget(row + 12, left, cols, "BATTERY", battery_value, battery_detail);
-      draw_battery_meter(row + 12, left, cols, battery_value);
+    } else if (cols >= 16 && pane_rows >= 23) {
+      const int row = top + (pane_rows - 23) / 2;
+      draw_widget(row, left, cols, "CLOCK", clock, date);
+      draw_widget(row + 6, left, cols, "WEATHER", weather_value, weather_detail);
+      if (!view.weather.location.empty())
+        draw_text(row + 7, left + 3, cols - 6, view.weather.location, section_style());
+      draw_widget(row + 12, left, cols, "NETWORK", network_value, network_detail);
+      draw_text(row + 13, left + 3, cols - 6,
+                network_value == "Offline" ? "Disconnected" : "Connected", section_style());
+      draw_widget(row + 18, left, cols, "BATTERY", battery_value, battery_detail);
+      draw_battery_meter(row + 18, left, cols, battery_value);
     } else {
-      if (pane_rows > 0) draw_field(top, left, cols, "Network", network_value, body_style());
-      if (pane_rows > 1) draw_field(top + 1, left, cols, "Clock", clock, body_style());
-      if (pane_rows > 2) draw_field(top + 2, left, cols, "Battery", battery_value, body_style());
+      if (pane_rows > 0) draw_field(top, left, cols, "Clock", clock, body_style());
+      if (pane_rows > 1) draw_field(top + 1, left, cols, "Weather", weather_value, body_style());
+      if (pane_rows > 2) draw_field(top + 2, left, cols, "Network", network_value, body_style());
+      if (pane_rows > 3) draw_field(top + 3, left, cols, "Battery", battery_value, body_style());
     }
   }
 
@@ -811,6 +834,15 @@ class Renderer {
       if (links_row + 3 < top + pane_rows)
         draw_text(links_row + 3, left, cols,
                   "Block all may break some websites.", muted_style());
+      return;
+    }
+    if (view.settings_selection == 5) {
+      draw_field(top, left, cols, "City",
+                 view.weather.location.empty() ? "Not set" : view.weather.location, body_style());
+      if (pane_rows > 2)
+        draw_field(top + 2, left, cols, "Status", view.weather.status, muted_style());
+      if (pane_rows > 4)
+        draw_text(top + 4, left, cols, "Weather data: Open-Meteo", muted_style());
       return;
     }
     for (size_t i = 0; i < kThemeNames.size(); ++i) {

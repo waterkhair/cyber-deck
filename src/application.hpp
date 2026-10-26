@@ -20,6 +20,8 @@ class Application {
     cookie_policy_ = load_cookie_policy();
     cookie_selection_ = static_cast<size_t>(cookie_policy_);
     show_web_header_links_ = load_web_header_links();
+    weather_view_ = weather_.snapshot();
+    next_weather_ = Clock::now() + std::chrono::minutes(15);
     renderer_.set_theme(theme_);
     create_slot(0);
     web_tabs_[0] = std::make_unique<WebTab>();
@@ -76,6 +78,13 @@ class Application {
               wifi_selection_ = wifi_view_.wired.size() +
                   static_cast<size_t>(selected - wifi_view_.networks.begin());
           }
+          ui_dirty_ = true;
+        }
+      }
+      if (weather_.fd() >= 0) {
+        pollfd update{weather_.fd(), POLLIN, 0};
+        if (::poll(&update, 1, 0) > 0 && (update.revents & POLLIN)) {
+          weather_view_ = weather_.snapshot();
           ui_dirty_ = true;
         }
       }
@@ -207,6 +216,10 @@ class Application {
         next_overview_ = now + 5s;
         ui_dirty_ = true;
       }
+      if (active_tab_ == 0 && now >= next_weather_) {
+        weather_.refresh();
+        next_weather_ = now + std::chrono::minutes(15);
+      }
       const std::time_t clock_minute = std::time(nullptr) / 60;
       if (clock_minute != last_drawn_minute_) ui_dirty_ = true;
       TerminalSlot *selected = !menu_focused_ && active_tab_ == 1 ? active_slot() :
@@ -231,7 +244,8 @@ class Application {
             view.help_dialog = HelpDialog::Confirm;
           else if (wifi_password_prompt_ || bluetooth_prompt_active)
             view.help_dialog = HelpDialog::Password;
-          else if (wave_add_stage_ != WaveAddStage::None || note_name_prompt_ || web_query_prompt_)
+          else if (wave_add_stage_ != WaveAddStage::None || note_name_prompt_ ||
+                   web_query_prompt_ || weather_location_prompt_)
             view.help_dialog = HelpDialog::TextEntry;
           view.theme = theme_;
           view.settings_selection = settings_selection_;
@@ -266,6 +280,7 @@ class Application {
             view.wifi.status = "Forgetting saved profiles...";
           }
           view.overview = overview_;
+          view.weather = weather_view_;
           view.active_terminal = active_index_;
           for (size_t i = 0; i < kMaxSessions; ++i)
             view.terminals[i] = slots_[i] != nullptr;
@@ -285,6 +300,7 @@ class Application {
       descriptors[count++] = {STDIN_FILENO, POLLIN, 0};
       descriptors[count++] = {signals_.fd(), POLLIN, 0};
       if (wifi_.fd() >= 0) descriptors[count++] = {wifi_.fd(), POLLIN, 0};
+      if (weather_.fd() >= 0) descriptors[count++] = {weather_.fd(), POLLIN, 0};
       if (audio_.fd() >= 0) descriptors[count++] = {audio_.fd(), POLLIN, 0};
       if (bluetooth_.fd() >= 0) descriptors[count++] = {bluetooth_.fd(), POLLIN, 0};
       for (const auto &slot : slots_) {
@@ -308,6 +324,7 @@ class Application {
       if (active_tab_ == 0) {
         const int until = milliseconds_until(next_overview_, now);
         timeout = std::min(timeout, until);
+        timeout = std::min(timeout, milliseconds_until(next_weather_, now));
       }
       for (const auto &slot : slots_) {
         if (slot && slot->session.stopping() && slot->session.active()) {
@@ -704,6 +721,13 @@ class Application {
               std::string(web_prompt_kind_ == WebPromptKind::Browse ? "URL: " : "Query: ") +
                   (web_query_.size() > 42 ? "..." + web_query_.substr(web_query_.size() - 39) : web_query_) + "_",
               "Enter open   Alt+Esc cancel", false};
+    if (weather_location_prompt_)
+      return {ModalView::Kind::TextEntry,
+              notice_.empty() ? "Weather city" : notice_,
+              "City: " + (weather_location_.size() > 40 ?
+                  "..." + weather_location_.substr(weather_location_.size() - 37) :
+                  weather_location_) + "_",
+              "Enter save   Ctrl+U clear   Alt+Esc cancel", false};
     if (audio_picker_)
       return {ModalView::Kind::AudioPicker, {}, {}, {}, false};
     return {};
@@ -714,6 +738,7 @@ class Application {
     wave_add_stage_ = WaveAddStage::None;
     note_name_prompt_ = false;
     web_query_prompt_ = false;
+    weather_location_prompt_ = false;
     if (wifi_password_prompt_) clear_wifi_password();
     wifi_forget_prompt_ = false;
     bluetooth_forget_prompt_ = false;
@@ -819,7 +844,7 @@ class Application {
     if (help_ || confirm_ != Confirm::None || wifi_forget_prompt_ ||
         wifi_password_prompt_ || bluetooth_forget_prompt_ || bluetooth_prompt_active ||
         audio_picker_ || wave_add_stage_ != WaveAddStage::None ||
-        note_name_prompt_ || web_query_prompt_) {
+        note_name_prompt_ || web_query_prompt_ || weather_location_prompt_) {
       handle_plain({27, false});
       return;
     }
@@ -837,7 +862,7 @@ class Application {
                               wifi_password_prompt_ || bluetooth_forget_prompt_ ||
                               bluetooth_prompt_active || help_ || audio_picker_ ||
                               wave_add_stage_ != WaveAddStage::None || note_name_prompt_ ||
-                              web_query_prompt_;
+                              web_query_prompt_ || weather_location_prompt_;
     if (value >= 'A' && value <= 'Z') value = value - 'A' + 'a';
     if (value == 27) { cyberdeck_back(); return true; }
     if (value == '?') {
@@ -918,6 +943,8 @@ class Application {
       note_name_.clear();
       web_query_prompt_ = false;
       web_query_.clear();
+      weather_location_prompt_ = false;
+      weather_location_.clear();
       if (bluetooth_page_ && tab != 5 && bluetooth_view_.discovering)
         bluetooth_.set_discovering(false);
       if (bluetooth_view_.prompt != BluetoothPromptKind::None &&
@@ -1457,6 +1484,47 @@ class Application {
     ui_dirty_ = true;
   }
 
+  void handle_weather_location_key(Key key) {
+    const bool enter = (key.special && key.value == KEY_ENTER) ||
+        (!key.special && (key.value == 10 || key.value == 13));
+    if (!key.special && key.value == 27) {
+      weather_location_prompt_ = false;
+      weather_location_.clear();
+      notice_.clear();
+    } else if (enter) {
+      const size_t first = weather_location_.find_first_not_of(' ');
+      const size_t last = weather_location_.find_last_not_of(' ');
+      const std::string location = first == std::string::npos ? "" :
+          weather_location_.substr(first, last - first + 1);
+      const bool saved = weather_.set_location(location);
+      weather_view_ = weather_.snapshot();
+      next_weather_ = Clock::now() + std::chrono::minutes(15);
+      weather_location_prompt_ = false;
+      weather_location_.clear();
+      notice_ = saved ? "" : "City changed; could not save preference";
+    } else if ((key.special && key.value == KEY_BACKSPACE) ||
+               (!key.special && (key.value == 8 || key.value == 127))) {
+      if (!weather_location_.empty()) {
+        do { weather_location_.pop_back(); }
+        while (!weather_location_.empty() &&
+               (static_cast<unsigned char>(weather_location_.back()) & 0xC0) == 0x80);
+      }
+      notice_.clear();
+    } else if (!key.special && key.value == 21) {
+      weather_location_.clear();
+      notice_.clear();
+    } else if (!key.special && key.value >= 32 && key.value <= WCHAR_MAX) {
+      std::mbstate_t state{};
+      char encoded[MB_LEN_MAX]{};
+      const size_t length = std::wcrtomb(encoded, static_cast<wchar_t>(key.value), &state);
+      if (length != static_cast<size_t>(-1) && weather_location_.size() + length <= 100) {
+        weather_location_.append(encoded, length);
+        notice_.clear();
+      }
+    }
+    ui_dirty_ = true;
+  }
+
   void handle_plain(Key key) {
     if (help_) {
       if (!key.special && key.value == 27) {
@@ -1496,6 +1564,10 @@ class Application {
     }
     if (web_query_prompt_) {
       handle_web_query_key(key);
+      return;
+    }
+    if (weather_location_prompt_) {
+      handle_weather_location_key(key);
       return;
     }
     if (menu_focused_) {
@@ -1606,6 +1678,18 @@ class Application {
         ui_dirty_ = true;
         return;
       }
+      if (settings_selection_ == 5) {
+        if (enter) {
+          weather_location_prompt_ = true;
+          weather_location_ = weather_view_.location;
+          notice_.clear();
+        } else if (!key.special && key.value == 'r') {
+          weather_.refresh();
+          notice_.clear();
+        }
+        ui_dirty_ = true;
+        return;
+      }
       if ((key.special && key.value == KEY_UP) ||
                  (!key.special && key.value == 'k')) {
         if (theme_selection_ > 0) --theme_selection_;
@@ -1691,6 +1775,8 @@ class Application {
   bool web_query_prompt_ = false;
   WebPromptKind web_prompt_kind_ = WebPromptKind::Wikipedia;
   std::string web_query_;
+  bool weather_location_prompt_ = false;
+  std::string weather_location_;
   UiLayout layout_ = ui_layout();
   size_t active_index_ = 0;
   size_t active_tab_ = 0;
@@ -1712,6 +1798,8 @@ class Application {
   AudioSnapshot audio_view_{};
   BluetoothBackend bluetooth_;
   BluetoothSnapshot bluetooth_view_{};
+  WeatherBackend weather_;
+  WeatherSnapshot weather_view_{};
   size_t bluetooth_selection_ = 0;
   std::string bluetooth_code_;
   uint64_t bluetooth_answered_epoch_ = 0;
@@ -1744,6 +1832,7 @@ class Application {
   std::string last_drawn_status_, notice_;
   Clock::time_point next_frame_{};
   Clock::time_point next_overview_{};
+  Clock::time_point next_weather_{};
   SystemOverview overview_{};
   std::time_t last_drawn_minute_ = -1;
 };
