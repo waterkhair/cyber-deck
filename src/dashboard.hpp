@@ -583,6 +583,10 @@ class Renderer {
   void draw_page(const ChromeView &view, int pane_rows, int left, int top, int cols) {
     if (pane_rows <= 0 || cols <= 0) return;
     const size_t tab = view.tab;
+    if (tab == 0) {
+      draw_dashboard(view, pane_rows, left, top, cols);
+      return;
+    }
     if (tab == 5) {
       draw_settings(view, pane_rows, left, top, cols);
       return;
@@ -599,8 +603,7 @@ class Renderer {
       draw_web(view, pane_rows, left, top, cols);
       return;
     }
-    const std::string heading = tab == 0 ? "SYSTEM OVERVIEW" :
-                                tab == 1 ? "TERMINAL" :
+    const std::string heading = tab == 1 ? "TERMINAL" :
                                 std::string(kTabs[tab]);
     draw_text(top, left, cols, heading, title_style());
     if (pane_rows > 1) {
@@ -608,32 +611,91 @@ class Renderer {
       (void)mvhline(top + 1, left, '-', cols);
       attroff(muted_style());
     }
-    if (tab == 0) {
-      // The overview values are supplied by the application at a low refresh rate.
-      const std::array<std::pair<const char *, const std::string *>, 5> rows = {{
-          {"LOAD", &view.overview.load}, {"MEMORY", &view.overview.memory},
-          {"UPTIME", &view.overview.uptime}, {"NETWORK", &view.overview.network},
-          {"BATTERY", &view.overview.battery}}};
-      std::time_t now = std::time(nullptr);
-      std::tm local{};
-      char clock[6] = "--:--";
-      if (localtime_r(&now, &local)) (void)std::strftime(clock, sizeof(clock), "%H:%M", &local);
-      if (pane_rows > 3) {
-        draw_text(top + 3, left, std::min(cols, 10), "TIME", section_style());
-        if (cols > 10) draw_text(top + 3, left + 10, cols - 10, clock, body_style());
-      }
-      for (size_t i = 0; i < rows.size(); ++i) {
-        const int row = top + 4 + static_cast<int>(i);
-        if (row >= top + pane_rows) break;
-        draw_text(row, left, std::min(cols, 10), rows[i].first, section_style());
-        if (cols > 10)
-          draw_text(row, left + 10, cols - 10, *rows[i].second, body_style());
-      }
-    } else if (tab == 1) {
+    if (tab == 1) {
       if (pane_rows > 3) draw_text(top + 3, left, cols,
           "No terminal. Alt+l creates one.", muted_style());
     } else if (pane_rows > 3) {
       draw_text(top + 3, left, cols, "PLANNED", section_style());
+    }
+  }
+
+  void draw_widget(int row, int col, int width, const char *title,
+                   const std::string &value, const std::string &detail) {
+    if (width < 12) return;
+    attron(section_style());
+    (void)mvaddch(row, col, '+');
+    (void)mvhline(row, col + 1, '-', width - 2);
+    (void)mvaddch(row, col + width - 1, '+');
+    for (int offset = 1; offset < 4; ++offset) {
+      (void)mvaddch(row + offset, col, '|');
+      (void)mvaddch(row + offset, col + width - 1, '|');
+    }
+    (void)mvaddch(row + 4, col, '+');
+    (void)mvhline(row + 4, col + 1, '-', width - 2);
+    (void)mvaddch(row + 4, col + width - 1, '+');
+    attroff(section_style());
+    draw_text(row, col + 2, width - 4, " " + std::string(title) + " ", section_style());
+    draw_text(row + 2, col + 2, width - 4, value, title_style());
+    draw_text(row + 3, col + 2, width - 4, detail, muted_style());
+  }
+
+  void draw_dashboard(const ChromeView &view, int pane_rows, int left, int top, int cols) {
+    std::string network_value = "Offline";
+    std::string network_detail = "No active connection";
+    const auto connected_lan = std::find_if(view.wifi.wired.begin(), view.wifi.wired.end(),
+        [](const LanConnection &lan) { return lan.connected; });
+    const auto default_lan = std::find_if(view.wifi.wired.begin(), view.wifi.wired.end(),
+        [&](const LanConnection &lan) {
+          return lan.connected && lan.interface_name == view.overview.network_interface;
+        });
+    const bool wifi_connected = !view.wifi.connected_ssid.empty();
+    if (default_lan != view.wifi.wired.end()) {
+      const auto &lan = *default_lan;
+      network_value = "LAN / " + lan.interface_name;
+      network_detail = lan.ip_address.empty() ? "Connected" : lan.ip_address;
+    } else if (wifi_connected) {
+      network_value = view.wifi.connected_ssid;
+      network_detail = "WiFi / " + view.wifi.device;
+    } else if (connected_lan != view.wifi.wired.end()) {
+      network_value = "LAN / " + connected_lan->interface_name;
+      network_detail = connected_lan->ip_address.empty() ? "Connected" : connected_lan->ip_address;
+    } else if (!view.overview.network_interface.empty()) {
+      network_value = view.overview.network_interface;
+      network_detail = "Active network link";
+    }
+
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+    char clock[32] = "--:--";
+    char date[24] = "Local time";
+    if (localtime_r(&now, &local)) {
+      (void)std::strftime(clock, sizeof(clock), "%H:%M %p", &local);
+      (void)std::strftime(date, sizeof(date), "%a %d %b", &local);
+    }
+    const size_t battery_separator = view.overview.battery.find("  ");
+    const std::string battery_value = view.overview.battery.substr(0, battery_separator);
+    const std::string battery_detail = battery_separator == std::string::npos ?
+        (battery_value == "Not detected" ? "No system battery" : "Power source") :
+        view.overview.battery.substr(battery_separator + 2);
+
+    if (cols >= 44 && pane_rows >= 11) {
+      const int width = std::min(cols - 4, 72);
+      const int col = left + (cols - width) / 2;
+      const int row = top + (pane_rows - 11) / 2;
+      const int left_width = (width - 2) / 2;
+      draw_widget(row, col, width, "NETWORK", network_value, network_detail);
+      draw_widget(row + 6, col, left_width, "CLOCK", clock, date);
+      draw_widget(row + 6, col + left_width + 2, width - left_width - 2,
+                  "BATTERY", battery_value, battery_detail);
+    } else if (cols >= 16 && pane_rows >= 17) {
+      const int row = top + (pane_rows - 17) / 2;
+      draw_widget(row, left, cols, "NETWORK", network_value, network_detail);
+      draw_widget(row + 6, left, cols, "CLOCK", clock, date);
+      draw_widget(row + 12, left, cols, "BATTERY", battery_value, battery_detail);
+    } else {
+      if (pane_rows > 0) draw_field(top, left, cols, "Network", network_value, body_style());
+      if (pane_rows > 1) draw_field(top + 1, left, cols, "Clock", clock, body_style());
+      if (pane_rows > 2) draw_field(top + 2, left, cols, "Battery", battery_value, body_style());
     }
   }
 
