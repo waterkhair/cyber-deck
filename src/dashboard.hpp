@@ -649,7 +649,6 @@ class Renderer {
       draw_widget_glyph(row + offset, col, L'│', border);
       draw_widget_glyph(row + offset, col + width - 1, L'│', border);
     }
-    draw_widget_glyph(row + 2, col, L'├', section_style());
     draw_text(row, col + 2, width - 4, " " + std::string(title) + " ", section_style());
     if (!indicator.empty() && width >= static_cast<int>(indicator.size()) + 21)
       draw_text(row + 1, col + width - 3 - static_cast<int>(indicator.size()),
@@ -716,19 +715,19 @@ class Renderer {
       const int col = left + (cols - width) / 2;
       const int row = top + (pane_rows - 11) / 2;
       const int left_width = (width - 2) / 2;
-      draw_widget(row, col, width, "01 / NETWORK", network_value, network_detail,
-                  network_value == "Offline" ? "NO LINK" : "LINK UP");
-      draw_widget(row + 6, col, left_width, "02 / CLOCK", clock, date);
+      draw_widget(row, col, width, "NETWORK", network_value, network_detail,
+                  network_value == "Offline" ? "Disconnected" : "Connected");
+      draw_widget(row + 6, col, left_width, "CLOCK", clock, date);
       draw_widget(row + 6, col + left_width + 2, width - left_width - 2,
-                  "03 / BATTERY", battery_value, battery_detail);
+                  "BATTERY", battery_value, battery_detail);
       draw_battery_meter(row + 6, col + left_width + 2, width - left_width - 2,
                          battery_value);
     } else if (cols >= 16 && pane_rows >= 17) {
       const int row = top + (pane_rows - 17) / 2;
-      draw_widget(row, left, cols, "01 / NETWORK", network_value, network_detail,
-                  network_value == "Offline" ? "NO LINK" : "LINK UP");
-      draw_widget(row + 6, left, cols, "02 / CLOCK", clock, date);
-      draw_widget(row + 12, left, cols, "03 / BATTERY", battery_value, battery_detail);
+      draw_widget(row, left, cols, "NETWORK", network_value, network_detail,
+                  network_value == "Offline" ? "Disconnected" : "Connected");
+      draw_widget(row + 6, left, cols, "CLOCK", clock, date);
+      draw_widget(row + 12, left, cols, "BATTERY", battery_value, battery_detail);
       draw_battery_meter(row + 12, left, cols, battery_value);
     } else {
       if (pane_rows > 0) draw_field(top, left, cols, "Network", network_value, body_style());
