@@ -11,4 +11,6 @@ void WifiBackend::connect(const WifiNetwork &, std::string) {}
 void WifiBackend::disconnect() {}
 void WifiBackend::forget(const std::string &) {}
 void WifiBackend::set_enabled(bool) {}
+void WifiBackend::connect_lan(const std::string &) {}
+void WifiBackend::disconnect_lan(const std::string &) {}
 }  // namespace cyberdeck

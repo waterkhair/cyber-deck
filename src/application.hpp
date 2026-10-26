@@ -48,24 +48,34 @@ class Application {
         pollfd update{wifi_.fd(), POLLIN, 0};
         if (::poll(&update, 1, 0) > 0 && (update.revents & POLLIN)) {
           WifiNetwork previous;
-          const bool had_selection = wifi_selection_ < wifi_view_.networks.size();
-          if (had_selection) previous = wifi_view_.networks[wifi_selection_];
+          const bool selected_lan = wifi_selection_ < wifi_view_.wired.size();
+          const std::string previous_lan_path = selected_lan ?
+              wifi_view_.wired[wifi_selection_].path : "";
+          const size_t old_wifi_index = wifi_selection_ >= wifi_view_.wired.size() ?
+              wifi_selection_ - wifi_view_.wired.size() : wifi_view_.networks.size();
+          const bool had_selection = old_wifi_index < wifi_view_.networks.size();
+          if (had_selection) previous = wifi_view_.networks[old_wifi_index];
           wifi_view_ = wifi_.snapshot();
           if (wifi_forgetting_request_ && wifi_view_.forget_epoch != wifi_forget_start_epoch_)
             wifi_forgetting_request_ = false;
-          if (!wifi_view_.networks.empty()) {
-            wifi_selection_ = std::min(wifi_selection_, wifi_view_.networks.size() - 1);
-            if (had_selection) {
-              auto selected = std::find_if(wifi_view_.networks.begin(), wifi_view_.networks.end(),
-                  [&previous](const WifiNetwork &network) {
-                    if (!previous.path.empty() && network.path == previous.path) return true;
-                    if (!previous.saved_uuid.empty() && network.saved_uuid == previous.saved_uuid) return true;
-                    return network.ssid == previous.ssid && network.visible == previous.visible;
-                  });
-              if (selected != wifi_view_.networks.end())
-                wifi_selection_ = static_cast<size_t>(selected - wifi_view_.networks.begin());
-            }
-          } else wifi_selection_ = 0;
+          const size_t total = wifi_view_.wired.size() + wifi_view_.networks.size();
+          wifi_selection_ = total ? std::min(wifi_selection_, total - 1) : 0;
+          if (selected_lan) {
+            auto selected = std::find_if(wifi_view_.wired.begin(), wifi_view_.wired.end(),
+                [&](const LanConnection &lan) { return lan.path == previous_lan_path; });
+            if (selected != wifi_view_.wired.end())
+              wifi_selection_ = static_cast<size_t>(selected - wifi_view_.wired.begin());
+          } else if (had_selection) {
+            auto selected = std::find_if(wifi_view_.networks.begin(), wifi_view_.networks.end(),
+                [&previous](const WifiNetwork &network) {
+                  if (!previous.path.empty() && network.path == previous.path) return true;
+                  if (!previous.saved_uuid.empty() && network.saved_uuid == previous.saved_uuid) return true;
+                  return network.ssid == previous.ssid && network.visible == previous.visible;
+                });
+            if (selected != wifi_view_.networks.end())
+              wifi_selection_ = wifi_view_.wired.size() +
+                  static_cast<size_t>(selected - wifi_view_.networks.begin());
+          }
           ui_dirty_ = true;
         }
       }
@@ -1226,8 +1236,21 @@ class Application {
       ui_dirty_ = true;
       return;
     }
-    if (enter && wifi_selection_ < wifi_view_.networks.size()) {
-      const auto &network = wifi_view_.networks[wifi_selection_];
+    const size_t wired_count = wifi_view_.wired.size();
+    const size_t total = wired_count + wifi_view_.networks.size();
+    const bool selected_wired = wifi_selection_ < wired_count;
+    const size_t network_index = selected_wired ? wifi_view_.networks.size() :
+        wifi_selection_ - wired_count;
+    if (enter && selected_wired) {
+      const auto &lan = wifi_view_.wired[wifi_selection_];
+      if (lan.connected) notice_ = "LAN is already connected";
+      else if (!lan.managed) notice_ = "LAN interface is unmanaged";
+      else if (!lan.carrier) notice_ = "Connect the LAN cable first";
+      else if (lan.connecting) notice_ = "LAN is connecting";
+      else { wifi_.connect_lan(lan.path); notice_.clear(); }
+      ui_dirty_ = true;
+    } else if (enter && network_index < wifi_view_.networks.size()) {
+      const auto &network = wifi_view_.networks[network_index];
       if (network.connected) notice_ = "Already connected";
       else if (!network.visible) notice_ = "Network out of range; press r to scan";
       else if (network.security == WifiSecurity::Enterprise ||
@@ -1246,22 +1269,36 @@ class Application {
       if (wifi_selection_ > 0) --wifi_selection_;
       ui_dirty_ = true;
     } else if ((key.special && key.value == KEY_DOWN) || (!key.special && key.value == 'j')) {
-      if (wifi_selection_ + 1 < wifi_view_.networks.size()) ++wifi_selection_;
+      if (wifi_selection_ + 1 < total) ++wifi_selection_;
       ui_dirty_ = true;
     } else if (!key.special && key.value == 'r') {
       wifi_.scan();
       notice_.clear();
       ui_dirty_ = true;
     } else if (!key.special && key.value == 'd') {
-      wifi_.disconnect();
-      notice_.clear();
+      if (selected_wired) {
+        const auto &lan = wifi_view_.wired[wifi_selection_];
+        if (lan.connecting) notice_ = "Wait for LAN connection to finish";
+        else if (!lan.connected) notice_ = "LAN is not connected";
+        else { wifi_.disconnect_lan(lan.path); notice_.clear(); }
+      } else if (network_index < wifi_view_.networks.size() &&
+                 !wifi_view_.networks[network_index].connected)
+        notice_ = "Selected WiFi is not connected";
+      else if (!wifi_view_.connected_ssid.empty()) {
+        wifi_.disconnect();
+        notice_.clear();
+      } else notice_ = "WiFi is not connected";
       ui_dirty_ = true;
     } else if (!key.special && key.value == 'w') {
       wifi_.set_enabled(!wifi_view_.enabled);
       notice_.clear();
       ui_dirty_ = true;
-    } else if (!key.special && key.value == 'p' && wifi_selection_ < wifi_view_.networks.size()) {
-      const auto &network = wifi_view_.networks[wifi_selection_];
+    } else if (selected_wired && !key.special &&
+               (key.value == 'p' || key.value == 'f')) {
+      notice_ = "Select a WiFi network for that action";
+      ui_dirty_ = true;
+    } else if (!key.special && key.value == 'p' && network_index < wifi_view_.networks.size()) {
+      const auto &network = wifi_view_.networks[network_index];
       if (!network.visible) notice_ = "Network out of range; press r to scan";
       else if (network.security != WifiSecurity::Personal || network.saved_uuid.empty())
         notice_ = "Select a saved password-protected network";
@@ -1272,8 +1309,8 @@ class Application {
         notice_.clear();
       }
       ui_dirty_ = true;
-    } else if (!key.special && key.value == 'f' && wifi_selection_ < wifi_view_.networks.size()) {
-      const auto &network = wifi_view_.networks[wifi_selection_];
+    } else if (!key.special && key.value == 'f' && network_index < wifi_view_.networks.size()) {
+      const auto &network = wifi_view_.networks[network_index];
       if (network.saved_uuid.empty()) notice_ = "This network has no saved profile";
       else {
         wifi_forget_uuid_ = network.saved_uuid;

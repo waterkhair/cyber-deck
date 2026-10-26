@@ -20,7 +20,7 @@ namespace cyberdeck {
 constexpr std::array<const char *, 6> kTabs = {
     "Dashboard", "Terminal", "Media", "Notes", "Web", "Settings"};
 constexpr std::array<const char *, 5> kSettingsSections = {
-    "Theme", "WiFi", "Audio", "Bluetooth", "Web"};
+    "Theme", "Network", "Audio", "Bluetooth", "Web"};
 enum class HelpDialog { None, Confirm, Password, TextEntry };
 
 struct ChromeView {
@@ -347,12 +347,12 @@ class Renderer {
                {"j", "Next theme"}, {"k", "Previous theme"},
                {"Enter", "Apply theme"}};
     } else if (view.tab == 5 && view.settings_selection == 1) {
-      section = "Settings / WiFi";
+      section = "Settings / Network";
       local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
-               {"j", "Next network"}, {"k", "Previous network"},
-               {"Enter", "Connect"}, {"r", "Scan"},
-               {"d", "Disconnect"}, {"w", "Power on/off"},
-               {"p", "Change password"}, {"f", "Forget network"}};
+               {"j", "Next item"}, {"k", "Previous item"},
+               {"Enter", "Connect selected"}, {"r", "Refresh / scan WiFi"},
+               {"d", "Disconnect selected"}, {"w", "WiFi on/off"},
+               {"p", "WiFi password"}, {"f", "Forget WiFi"}};
     } else if (view.tab == 5 && view.audio_picker) {
       section = "Settings / Audio picker";
       local = {{"j", "Next device"}, {"k", "Previous device"},
@@ -678,7 +678,7 @@ class Renderer {
   void draw_settings(const ChromeView &view, int pane_rows, int left, int top, int cols) {
     if (pane_rows <= 0) return;
     if (view.settings_selection == 1) {
-      draw_wifi(view, pane_rows, left, top, cols);
+      draw_network(view, pane_rows, left, top, cols);
       return;
     }
     if (view.settings_selection == 2) {
@@ -835,36 +835,69 @@ class Renderer {
     }
   }
 
-  void draw_wifi(const ChromeView &view, int pane_rows, int left, int top, int cols) {
+  void draw_network(const ChromeView &view, int pane_rows, int left, int top, int cols) {
     const int bottom = top + pane_rows;
-    if (top < bottom) draw_field(top, left, cols, "Device",
-        view.wifi.device.empty() ? "Not detected" : view.wifi.device,
-        view.wifi.device.empty() ? muted_style() : body_style());
-    if (top + 1 < bottom) draw_field(top + 1, left, cols, "Network",
-        view.wifi.connected_ssid.empty() ? "Not connected" : view.wifi.connected_ssid,
-        view.wifi.connected_ssid.empty() ? muted_style() : body_style());
+    std::string wifi_summary = view.wifi.device.empty() ? "No adapter" :
+        view.wifi.device + (view.wifi.enabled ?
+            (view.wifi.connected_ssid.empty() ? "  disconnected" :
+             "  " + view.wifi.connected_ssid) : "  off");
+    if (top < bottom) draw_field(top, left, cols, "WiFi", wifi_summary,
+                                 view.wifi.device.empty() ? muted_style() : body_style());
+    const auto active_lan = std::find_if(view.wifi.wired.begin(), view.wifi.wired.end(),
+        [](const LanConnection &lan) { return lan.connected; });
+    const LanConnection *lan = active_lan != view.wifi.wired.end() ? &*active_lan :
+        view.wifi.wired.empty() ? nullptr : &view.wifi.wired.front();
+    std::string lan_summary = "No Ethernet interface";
+    if (lan) {
+      lan_summary = lan->interface_name + "  " +
+          (lan->connected ? "connected" : !lan->managed ? "unmanaged" :
+           !lan->carrier ? "cable unplugged" : lan->connecting ? "connecting" : "disconnected");
+      if (lan->connected && !lan->ip_address.empty()) lan_summary += "  " + lan->ip_address;
+      if (view.wifi.wired.size() > 1)
+        lan_summary += "  (" + std::to_string(view.wifi.wired.size()) + " interfaces)";
+    }
+    if (top + 1 < bottom) draw_field(top + 1, left, cols, "LAN", lan_summary,
+                                     lan ? body_style() : muted_style());
     if (top + 2 < bottom) draw_field(top + 2, left, cols, "Status",
         view.wifi.status + (view.wifi.scanning ? "  scanning" : ""),
         view.wifi.available ? body_style() : muted_style());
     const int list_top = top + 4;
     const int list_bottom = bottom;
-    if (view.wifi.networks.empty()) {
+    const size_t wired_count = view.wifi.wired.size();
+    const size_t total = wired_count + view.wifi.networks.size();
+    if (total == 0) {
       if (list_top < list_bottom) draw_text(list_top, left, cols,
-          !view.wifi.enabled ? "Enable WiFi to scan for networks" : "No networks found; press r to scan",
+          !view.wifi.enabled && !view.wifi.device.empty() ? "WiFi is off; press w to enable" :
+          "No wired devices or WiFi networks; press r to refresh",
           muted_style());
       return;
     }
     const int available_rows = std::max(0, list_bottom - list_top);
     const size_t start = view.wifi_selection >= static_cast<size_t>(available_rows) && available_rows > 0 ?
         view.wifi_selection - static_cast<size_t>(available_rows) + 1 : 0;
-    for (int i = 0; i < available_rows && start + static_cast<size_t>(i) < view.wifi.networks.size(); ++i) {
-      const auto &network = view.wifi.networks[start + static_cast<size_t>(i)];
+    for (int i = 0; i < available_rows && start + static_cast<size_t>(i) < total; ++i) {
+      const size_t index = start + static_cast<size_t>(i);
+      const attr_t style = !view.menu_focused && view.wifi_page && index == view.wifi_selection ?
+                           selected_style() : body_style();
+      if (index < wired_count) {
+        const auto &wired = view.wifi.wired[index];
+        std::string label = std::string(wired.connected ? "* LAN  " : "  LAN  ") +
+                            wired.interface_name + "  " +
+            (wired.connected ? "connected" : !wired.managed ? "unmanaged" :
+             !wired.carrier ? "no cable" : wired.connecting ? "connecting" : "disconnected");
+        if (wired.connected && !wired.ip_address.empty()) label += "  " + wired.ip_address;
+        if (wired.connected && wired.speed_mbps) label += "  " +
+            std::to_string(wired.speed_mbps) + " Mb/s";
+        draw_text(list_top + i, left, cols, label, style);
+        continue;
+      }
+      const auto &network = view.wifi.networks[index - wired_count];
       const bool lock_icon = ghostty_ && network.visible &&
                              network.security == WifiSecurity::Personal && cols >= 3;
       const char *security = network.security == WifiSecurity::Open ? "open" :
                              network.security == WifiSecurity::Personal ? "lock" :
                              network.security == WifiSecurity::Enterprise ? "802.1X" : "other";
-      std::string label = network.connected ? "* " : "  ";
+      std::string label = network.connected ? "* WiFi " : "  WiFi ";
       label += network.ssid;
       if (network.visible) {
         label += "  " + std::to_string(network.strength) + "%";
@@ -872,9 +905,6 @@ class Renderer {
       }
       else label += "  out of range";
       if (!network.saved_uuid.empty()) label += " saved";
-      const attr_t style = !view.menu_focused && view.wifi_page &&
-                           start + static_cast<size_t>(i) == view.wifi_selection ?
-                           selected_style() : body_style();
       draw_text(list_top + i, left, lock_icon ? cols - 3 : cols, label, style);
       if (lock_icon) {
         // Keep the right-aligned icon on the page background. The row highlight

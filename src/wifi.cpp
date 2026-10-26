@@ -70,17 +70,23 @@ std::string signature(const WifiSnapshot &value) {
               std::to_string(network.visible) +
               std::to_string(static_cast<int>(network.security)) +
               std::to_string(network.uses_sae);
+  for (const auto &lan : value.wired)
+    result += lan.path + lan.interface_name + lan.profile + lan.ip_address +
+              std::to_string(lan.managed) + std::to_string(lan.carrier) +
+              std::to_string(lan.connected) + std::to_string(lan.connecting) +
+              std::to_string(lan.speed_mbps);
   return result;
 }
 }  // namespace
 
 struct WifiBackend::Impl {
-  enum class Action { Scan, Connect, Disconnect, Enable, Forget };
+  enum class Action { Scan, Connect, Disconnect, Enable, Forget, ConnectLan, DisconnectLan };
   struct Command {
     Action action;
     WifiNetwork network;
     std::string password;
     bool enabled = false;
+    std::string lan_path;
   };
 
   int pipe_fd[2] = {-1, -1};
@@ -92,6 +98,7 @@ struct WifiBackend::Impl {
   GMainContext *context = nullptr;  // Accessed under mutex when posted from the UI.
   NMClient *client = nullptr;       // Worker thread only.
   NMActiveConnection *pending_active = nullptr;
+  NMActiveConnection *pending_lan_active = nullptr;
   bool scanning = false;
   bool connecting = false;
   bool forgetting = false;
@@ -104,6 +111,10 @@ struct WifiBackend::Impl {
   std::string forget_uuid, forget_name, forget_error;
   std::chrono::steady_clock::time_point forget_cache_deadline{};
   std::string message;
+  std::string lan_message;
+  std::string lan_target_path;
+  bool lan_connecting = false;
+  std::chrono::steady_clock::time_point lan_connect_deadline{};
   std::string target_ssid;
   std::string target_ap_path;
   gint64 scan_before = -1;
@@ -160,6 +171,19 @@ struct WifiBackend::Impl {
     for (guint i = 0; i < devices->len; ++i) {
       auto *candidate = static_cast<NMDevice *>(g_ptr_array_index(devices, i));
       if (NM_IS_DEVICE_WIFI(candidate)) return NM_DEVICE_WIFI(candidate);
+    }
+    return nullptr;
+  }
+
+  NMDeviceEthernet *lan_device(const std::string &path) const {
+    if (!client || path.empty()) return nullptr;
+    const GPtrArray *devices = nm_client_get_devices(client);
+    if (!devices) return nullptr;
+    for (guint i = 0; i < devices->len; ++i) {
+      auto *candidate = static_cast<NMDevice *>(g_ptr_array_index(devices, i));
+      const char *candidate_path = nm_object_get_path(NM_OBJECT(candidate));
+      if (NM_IS_DEVICE_ETHERNET(candidate) && candidate_path && path == candidate_path)
+        return NM_DEVICE_ETHERNET(candidate);
     }
     return nullptr;
   }
@@ -287,6 +311,53 @@ struct WifiBackend::Impl {
     fresh.hardware_enabled = nm_client_wireless_hardware_get_enabled(client);
     fresh.scanning = scanning;
     fresh.connecting = connecting;
+    const GPtrArray *all_devices = nm_client_get_devices(client);
+    if (all_devices) for (guint i = 0; i < all_devices->len; ++i) {
+      auto *candidate = static_cast<NMDevice *>(g_ptr_array_index(all_devices, i));
+      if (!NM_IS_DEVICE_ETHERNET(candidate)) continue;
+      LanConnection lan;
+      const char *path = nm_object_get_path(NM_OBJECT(candidate));
+      const char *iface = nm_device_get_iface(candidate);
+      lan.path = path ? path : "";
+      lan.interface_name = iface ? iface : "Ethernet";
+      lan.managed = nm_device_get_managed(candidate);
+      lan.carrier = nm_device_ethernet_get_carrier(NM_DEVICE_ETHERNET(candidate));
+      lan.speed_mbps = nm_device_ethernet_get_speed(NM_DEVICE_ETHERNET(candidate));
+      lan.connected = nm_device_get_state(candidate) == NM_DEVICE_STATE_ACTIVATED;
+      lan.connecting = lan_connecting && lan.path == lan_target_path;
+      NMActiveConnection *active = nm_device_get_active_connection(candidate);
+      const char *id = active ? nm_active_connection_get_id(active) : nullptr;
+      lan.profile = id ? id : "";
+      if (lan.connected) {
+        NMIPConfig *ip = nm_device_get_ip4_config(candidate);
+        GPtrArray *addresses = ip ? nm_ip_config_get_addresses(ip) : nullptr;
+        if (addresses && addresses->len > 0) {
+          const char *address = nm_ip_address_get_address(
+              static_cast<NMIPAddress *>(g_ptr_array_index(addresses, 0)));
+          lan.ip_address = address ? address : "";
+        }
+      }
+      fresh.wired.push_back(std::move(lan));
+    }
+    if (lan_connecting) {
+      NMDeviceEthernet *target = lan_device(lan_target_path);
+      const bool succeeded = target &&
+          nm_device_get_state(NM_DEVICE(target)) == NM_DEVICE_STATE_ACTIVATED;
+      const bool failed = pending_lan_active &&
+          nm_active_connection_get_state(pending_lan_active) ==
+              NM_ACTIVE_CONNECTION_STATE_DEACTIVATED;
+      const bool missing = !target;
+      const bool device_failed = target &&
+          nm_device_get_state(NM_DEVICE(target)) == NM_DEVICE_STATE_FAILED;
+      const bool timed_out = std::chrono::steady_clock::now() > lan_connect_deadline;
+      if (succeeded || failed || missing || device_failed || timed_out) {
+        lan_connecting = false;
+        lan_message = succeeded ? "" : missing ? "LAN interface disappeared" :
+            (failed || device_failed) ? "LAN connection failed" : "LAN connection timed out";
+        g_clear_object(&pending_lan_active);
+        for (auto &lan : fresh.wired) lan.connecting = false;
+      }
+    }
     if (connecting && pending_active &&
         nm_active_connection_get_state(pending_active) == NM_ACTIVE_CONNECTION_STATE_DEACTIVATED) {
       connecting = false;
@@ -296,7 +367,10 @@ struct WifiBackend::Impl {
     }
     NMDeviceWifi *wifi = device();
     if (!wifi) {
-      fresh.status = "No WiFi adapter found";
+      fresh.status = !lan_message.empty() ? lan_message :
+          std::any_of(fresh.wired.begin(), fresh.wired.end(),
+              [](const LanConnection &lan) { return lan.connected; }) ?
+              "LAN connected; no WiFi adapter" : "No WiFi adapter found";
       publish(std::move(fresh));
       return;
     }
@@ -396,6 +470,12 @@ struct WifiBackend::Impl {
       if (a.ssid != b.ssid) return a.ssid < b.ssid;
       return a.saved_uuid < b.saved_uuid;
     });
+    if (!connecting && !forgetting && message.empty() && lan_message.empty() &&
+        fresh.connected_ssid.empty() &&
+        std::any_of(fresh.wired.begin(), fresh.wired.end(),
+            [](const LanConnection &lan) { return lan.connected; }))
+      fresh.status = "LAN connected";
+    if (!lan_message.empty()) fresh.status = lan_message;
     publish(std::move(fresh));
   }
 
@@ -432,6 +512,36 @@ struct WifiBackend::Impl {
       g_clear_object(&self->pending_active);
       self->pending_active = active;
     }
+    g_clear_error(&error);
+    self->update();
+  }
+
+  static void lan_activation_finished(GObject *source, GAsyncResult *result, gpointer data) {
+    auto *self = static_cast<Impl *>(data);
+    GError *error = nullptr;
+    NMActiveConnection *active = nm_client_activate_connection_finish(NM_CLIENT(source), result, &error);
+    if (!active) {
+      self->lan_connecting = false;
+      self->lan_message = error ? error->message : "LAN connection failed";
+    } else if (self->lan_connecting) {
+      g_clear_object(&self->pending_lan_active);
+      self->pending_lan_active = active;
+    } else g_object_unref(active);
+    g_clear_error(&error);
+    self->update();
+  }
+
+  static void lan_new_activation_finished(GObject *source, GAsyncResult *result, gpointer data) {
+    auto *self = static_cast<Impl *>(data);
+    GError *error = nullptr;
+    NMActiveConnection *active = nm_client_add_and_activate_connection_finish(NM_CLIENT(source), result, &error);
+    if (!active) {
+      self->lan_connecting = false;
+      self->lan_message = error ? error->message : "LAN connection failed";
+    } else if (self->lan_connecting) {
+      g_clear_object(&self->pending_lan_active);
+      self->pending_lan_active = active;
+    } else g_object_unref(active);
     g_clear_error(&error);
     self->update();
   }
@@ -481,8 +591,10 @@ struct WifiBackend::Impl {
   static void disconnect_finished(GObject *source, GAsyncResult *result, gpointer data) {
     auto *self = static_cast<Impl *>(data);
     GError *error = nullptr;
-    if (!nm_device_disconnect_finish(NM_DEVICE(source), result, &error))
-      self->message = error ? error->message : "Disconnect failed";
+    if (!nm_device_disconnect_finish(NM_DEVICE(source), result, &error)) {
+      std::string &message = NM_IS_DEVICE_ETHERNET(source) ? self->lan_message : self->message;
+      message = error ? error->message : "Disconnect failed";
+    } else if (NM_IS_DEVICE_ETHERNET(source)) self->lan_message.clear();
     g_clear_error(&error);
     self->update();
   }
@@ -505,6 +617,36 @@ struct WifiBackend::Impl {
     if (!client || !nm_client_get_nm_running(client)) {
       message = "NetworkManager unavailable";
       if (command.action == Action::Forget) ++forget_epoch;
+      update();
+      return;
+    }
+    if (command.action == Action::ConnectLan || command.action == Action::DisconnectLan) {
+      NMDeviceEthernet *lan = lan_device(command.lan_path);
+      if (!lan) lan_message = "LAN interface unavailable";
+      else if (!nm_device_get_managed(NM_DEVICE(lan))) lan_message = "LAN interface is unmanaged";
+      else if (command.action == Action::DisconnectLan && lan_connecting)
+        lan_message = "Wait for LAN connection to finish";
+      else if (command.action == Action::DisconnectLan) {
+        lan_connecting = false;
+        g_clear_object(&pending_lan_active);
+        lan_message = "Disconnecting LAN...";
+        nm_device_disconnect_async(NM_DEVICE(lan), nullptr, disconnect_finished, this);
+      } else if (!nm_device_ethernet_get_carrier(lan)) lan_message = "LAN cable disconnected";
+      else if (lan_connecting) lan_message = "Wait for LAN connection";
+      else {
+        g_clear_object(&pending_lan_active);
+        lan_connecting = true;
+        lan_target_path = command.lan_path;
+        lan_connect_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(35);
+        lan_message = "Connecting LAN...";
+        const GPtrArray *available = nm_device_get_available_connections(NM_DEVICE(lan));
+        if (available && available->len > 0)
+          nm_client_activate_connection_async(client, nullptr, NM_DEVICE(lan), nullptr,
+                                               nullptr, lan_activation_finished, this);
+        else
+          nm_client_add_and_activate_connection_async(client, nullptr, NM_DEVICE(lan), nullptr,
+                                                       nullptr, lan_new_activation_finished, this);
+      }
       update();
       return;
     }
@@ -690,6 +832,7 @@ struct WifiBackend::Impl {
     }
     g_source_destroy(timer);
     g_clear_object(&pending_active);
+    g_clear_object(&pending_lan_active);
     g_clear_pointer(&forget_ssid, g_bytes_unref);
     if (client) g_object_unref(client);
     g_main_context_pop_thread_default(local);
@@ -706,15 +849,21 @@ WifiSnapshot WifiBackend::snapshot() {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   return impl_->view;
 }
-void WifiBackend::scan() { impl_->post({Impl::Action::Scan, {}, {}, false}); }
+void WifiBackend::scan() { impl_->post({Impl::Action::Scan, {}, {}, false, {}}); }
 void WifiBackend::connect(const WifiNetwork &network, std::string password) {
-  impl_->post({Impl::Action::Connect, network, std::move(password), false});
+  impl_->post({Impl::Action::Connect, network, std::move(password), false, {}});
 }
-void WifiBackend::disconnect() { impl_->post({Impl::Action::Disconnect, {}, {}, false}); }
+void WifiBackend::disconnect() { impl_->post({Impl::Action::Disconnect, {}, {}, false, {}}); }
 void WifiBackend::forget(const std::string &uuid) {
   WifiNetwork selected;
   selected.saved_uuid = uuid;
-  impl_->post({Impl::Action::Forget, std::move(selected), {}, false});
+  impl_->post({Impl::Action::Forget, std::move(selected), {}, false, {}});
 }
-void WifiBackend::set_enabled(bool enabled) { impl_->post({Impl::Action::Enable, {}, {}, enabled}); }
+void WifiBackend::set_enabled(bool enabled) { impl_->post({Impl::Action::Enable, {}, {}, enabled, {}}); }
+void WifiBackend::connect_lan(const std::string &path) {
+  impl_->post({Impl::Action::ConnectLan, {}, {}, false, path});
+}
+void WifiBackend::disconnect_lan(const std::string &path) {
+  impl_->post({Impl::Action::DisconnectLan, {}, {}, false, path});
+}
 }  // namespace cyberdeck

@@ -20,6 +20,18 @@ struct WifiNetwork {
   bool connected = false;
 };
 
+struct LanConnection {
+  std::string path;
+  std::string interface_name;
+  std::string profile;
+  std::string ip_address;
+  bool managed = false;
+  bool carrier = false;
+  bool connected = false;
+  bool connecting = false;
+  unsigned speed_mbps = 0;
+};
+
 struct WifiSnapshot {
   bool available = false;
   bool enabled = false;
@@ -31,6 +43,7 @@ struct WifiSnapshot {
   std::string device;
   std::string connected_ssid;
   std::string status = "NetworkManager unavailable";
+  std::vector<LanConnection> wired;
   std::vector<WifiNetwork> networks;
 };
 
@@ -48,6 +61,8 @@ class WifiBackend {
   void disconnect();
   void forget(const std::string &uuid);
   void set_enabled(bool enabled);
+  void connect_lan(const std::string &path);
+  void disconnect_lan(const std::string &path);
 
  private:
   struct Impl;
