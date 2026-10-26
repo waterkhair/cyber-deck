@@ -302,8 +302,8 @@ class Renderer {
                {"Ctrl+u", "Clear entry"}};
     } else if (view.menu_focused) {
       section = std::string(kTabs[view.tab]) + " preview";
-      if (view.tab > 0) local.emplace_back("Alt+h", "Previous module");
-      if (view.tab + 1 < kTabs.size()) local.emplace_back("Alt+l", "Next module");
+      if (view.tab > 0) local.emplace_back("Alt+h/h/Left", "Previous");
+      if (view.tab + 1 < kTabs.size()) local.emplace_back("Alt+l/l/Right", "Next");
       local.emplace_back("Enter", "Open module");
     } else if (view.tab == 0) {
       section = "Dashboard";
@@ -326,9 +326,13 @@ class Renderer {
                {"n", "New note"}, {"j", "Next note"},
                {"k", "Previous note"}, {"Enter", "Edit note"},
                {"Ctrl+o", "Save in nano"}, {"Ctrl+x", "Exit nano"}};
+      if (!view.note_editing) {
+        local[0] = {"Alt+h/h/Left", "Previous"};
+        local[1] = {"Alt+l/l/Right", "Next"};
+      }
     } else if (view.tab == 3) {
       section = "Notes / Voice";
-      local = {{"Alt+h", "Previous tab"}, {"Alt+l", "Next tab"}};
+      local = {{"Alt+h/h/Left", "Previous"}, {"Alt+l/l/Right", "Next"}};
       note = "Recording is not available yet";
     } else if (view.tab == 4) {
       section = "Web";
@@ -339,6 +343,8 @@ class Renderer {
         local.emplace_back("g", "Open URL in ELinks");
         local.emplace_back("q", "Exit ELinks page");
       } else {
+        local[0] = {"Alt+h/h/Left", "Previous"};
+        local[1] = {"Alt+l/l/Right", "Next / new"};
         local.emplace_back("w", "Wikipedia search");
         local.emplace_back("b", "Browse URL");
         local.emplace_back("d", "DuckDuckGo search");
@@ -346,12 +352,12 @@ class Renderer {
       }
     } else if (view.tab == 5 && view.settings_selection == 0) {
       section = "Settings / Theme";
-      local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
+      local = {{"Alt+h/h/Left", "Previous"}, {"Alt+l/l/Right", "Next"},
                {"j", "Next theme"}, {"k", "Previous theme"},
                {"Enter", "Apply theme"}};
     } else if (view.tab == 5 && view.settings_selection == 1) {
       section = "Settings / Network";
-      local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
+      local = {{"Alt+h/h/Left", "Previous"}, {"Alt+l/l/Right", "Next"},
                {"j", "Next item"}, {"k", "Previous item"},
                {"Enter", "Connect selected"}, {"r", "Refresh / scan WiFi"},
                {"d", "Disconnect selected"}, {"w", "WiFi on/off"},
@@ -368,17 +374,17 @@ class Renderer {
                {"l/Right", "Volume up"}, {"r", "Refresh"}};
     } else if (view.tab == 5 && view.settings_selection == 4) {
       section = "Settings / Web";
-      local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
+      local = {{"Alt+h/h/Left", "Previous"}, {"Alt+l/l/Right", "Next"},
                {"j", "Next option"}, {"k", "Previous option"},
                {"Enter", "Apply / toggle option"}};
       note = "ELinks cannot identify necessary cookies";
     } else if (view.tab == 5 && view.settings_selection == 5) {
       section = "Settings / Weather";
-      local = {{"Alt+h", "Previous section"}, {"Enter", "Set city"},
+      local = {{"Alt+h/h/Left", "Previous"}, {"Enter", "Set city"},
                {"r", "Refresh weather"}};
     } else if (view.tab == 5) {
       section = "Settings / Bluetooth";
-      local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
+      local = {{"Alt+h/h/Left", "Previous"}, {"Alt+l/l/Right", "Next"},
                {"j", "Next device"}, {"k", "Previous device"},
                {"Enter", "Connect / pair"}, {"r", "Scan"},
                {"w", "Power on/off"}, {"p", "Pair"},

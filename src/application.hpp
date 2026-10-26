@@ -1572,6 +1572,23 @@ class Application {
       handle_weather_location_key(key);
       return;
     }
+    const bool previous = (key.special && key.value == KEY_LEFT) ||
+        (!key.special && key.value == 'h');
+    const bool next = (key.special && key.value == KEY_RIGHT) ||
+        (!key.special && key.value == 'l');
+    if (previous || next) {
+      const bool embedded_input = !menu_focused_ &&
+          ((active_tab_ == 1 && active_slot()) ||
+           (active_tab_ == 3 && notes_section_ == 0 && note_editor_) ||
+           (active_tab_ == 4 && web_tab().browser && !web_tab().browser_closing));
+      const bool audio_volume = !menu_focused_ && active_tab_ == 5 && audio_page_;
+      const bool tab_navigation = menu_focused_ || active_tab_ == 1 || active_tab_ == 3 ||
+                                  active_tab_ == 4 || active_tab_ == 5;
+      if (tab_navigation && !embedded_input && !audio_volume) {
+        (void)handle_alt(previous ? 'h' : 'l');
+        return;
+      }
+    }
     if (menu_focused_) {
       if ((key.special && key.value == KEY_ENTER) ||
           (!key.special && (key.value == 10 || key.value == 13))) {
