@@ -12,6 +12,7 @@
 #include "web.hpp"
 
 #include <ctime>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
@@ -619,24 +620,56 @@ class Renderer {
     }
   }
 
+  void draw_widget_glyph(int row, int col, wchar_t glyph, attr_t style) {
+    cchar_t cell{};
+    const wchar_t text[] = {glyph, L'\0'};
+    if (MB_CUR_MAX > 1 && setcchar(&cell, text, style, 0, nullptr) == OK &&
+        mvadd_wch(row, col, &cell) == OK) return;
+    const char fallback = glyph == L'─' ? '-' : glyph == L'│' ? '|' :
+                          glyph == L'█' ? '#' : glyph == L'░' ? '.' : '+';
+    attron(style);
+    (void)mvaddch(row, col, fallback);
+    attroff(style);
+  }
+
   void draw_widget(int row, int col, int width, const char *title,
-                   const std::string &value, const std::string &detail) {
+                   const std::string &value, const std::string &detail,
+                   const std::string &indicator = {}) {
     if (width < 12) return;
-    attron(section_style());
-    (void)mvaddch(row, col, '+');
-    (void)mvhline(row, col + 1, '-', width - 2);
-    (void)mvaddch(row, col + width - 1, '+');
-    for (int offset = 1; offset < 4; ++offset) {
-      (void)mvaddch(row + offset, col, '|');
-      (void)mvaddch(row + offset, col + width - 1, '|');
+    const attr_t border = muted_style();
+    draw_widget_glyph(row, col, L'╭', border);
+    draw_widget_glyph(row, col + width - 1, L'╮', border);
+    draw_widget_glyph(row + 4, col, L'╰', border);
+    draw_widget_glyph(row + 4, col + width - 1, L'╯', border);
+    for (int x = 1; x < width - 1; ++x) {
+      draw_widget_glyph(row, col + x, L'─', border);
+      draw_widget_glyph(row + 4, col + x, L'─', border);
     }
-    (void)mvaddch(row + 4, col, '+');
-    (void)mvhline(row + 4, col + 1, '-', width - 2);
-    (void)mvaddch(row + 4, col + width - 1, '+');
-    attroff(section_style());
+    for (int offset = 1; offset < 4; ++offset) {
+      draw_widget_glyph(row + offset, col, L'│', border);
+      draw_widget_glyph(row + offset, col + width - 1, L'│', border);
+    }
+    draw_widget_glyph(row + 2, col, L'├', section_style());
     draw_text(row, col + 2, width - 4, " " + std::string(title) + " ", section_style());
-    draw_text(row + 2, col + 2, width - 4, value, title_style());
-    draw_text(row + 3, col + 2, width - 4, detail, muted_style());
+    if (!indicator.empty() && width >= static_cast<int>(indicator.size()) + 21)
+      draw_text(row + 1, col + width - 3 - static_cast<int>(indicator.size()),
+                static_cast<int>(indicator.size()), indicator, section_style());
+    draw_text(row + 2, col + 3, width - 6, value, title_style());
+    draw_text(row + 3, col + 3, width - 6, detail, muted_style());
+  }
+
+  void draw_battery_meter(int row, int col, int width, const std::string &capacity) {
+    if (capacity.empty() || capacity.back() != '%') return;
+    char *end = nullptr;
+    const long percent = std::strtol(capacity.c_str(), &end, 10);
+    if (end != capacity.c_str() + capacity.size() - 1 || percent < 0 || percent > 100)
+      return;
+    const int cells = std::min(12, width - 6);
+    if (cells <= 0) return;
+    const int filled = static_cast<int>((percent * cells + 50) / 100);
+    for (int i = 0; i < cells; ++i)
+      draw_widget_glyph(row + 1, col + 3 + i, i < filled ? L'█' : L'░',
+                        i < filled ? section_style() : muted_style());
   }
 
   void draw_dashboard(const ChromeView &view, int pane_rows, int left, int top, int cols) {
@@ -683,15 +716,20 @@ class Renderer {
       const int col = left + (cols - width) / 2;
       const int row = top + (pane_rows - 11) / 2;
       const int left_width = (width - 2) / 2;
-      draw_widget(row, col, width, "NETWORK", network_value, network_detail);
-      draw_widget(row + 6, col, left_width, "CLOCK", clock, date);
+      draw_widget(row, col, width, "01 / NETWORK", network_value, network_detail,
+                  network_value == "Offline" ? "NO LINK" : "LINK UP");
+      draw_widget(row + 6, col, left_width, "02 / CLOCK", clock, date);
       draw_widget(row + 6, col + left_width + 2, width - left_width - 2,
-                  "BATTERY", battery_value, battery_detail);
+                  "03 / BATTERY", battery_value, battery_detail);
+      draw_battery_meter(row + 6, col + left_width + 2, width - left_width - 2,
+                         battery_value);
     } else if (cols >= 16 && pane_rows >= 17) {
       const int row = top + (pane_rows - 17) / 2;
-      draw_widget(row, left, cols, "NETWORK", network_value, network_detail);
-      draw_widget(row + 6, left, cols, "CLOCK", clock, date);
-      draw_widget(row + 12, left, cols, "BATTERY", battery_value, battery_detail);
+      draw_widget(row, left, cols, "01 / NETWORK", network_value, network_detail,
+                  network_value == "Offline" ? "NO LINK" : "LINK UP");
+      draw_widget(row + 6, left, cols, "02 / CLOCK", clock, date);
+      draw_widget(row + 12, left, cols, "03 / BATTERY", battery_value, battery_detail);
+      draw_battery_meter(row + 12, left, cols, battery_value);
     } else {
       if (pane_rows > 0) draw_field(top, left, cols, "Network", network_value, body_style());
       if (pane_rows > 1) draw_field(top + 1, left, cols, "Clock", clock, body_style());
