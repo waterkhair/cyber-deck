@@ -364,8 +364,8 @@ class Renderer {
       section = "Settings / Audio";
       local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
                {"j", "Select input"}, {"k", "Select output"},
-               {"Enter", "Choose device"}, {"Left", "Volume down"},
-               {"Right", "Volume up"}, {"r", "Refresh"}};
+               {"Enter", "Choose device"}, {"h/Left", "Volume down"},
+               {"l/Right", "Volume up"}, {"r", "Refresh"}};
     } else if (view.tab == 5 && view.settings_selection == 4) {
       section = "Settings / Web";
       local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},

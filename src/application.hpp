@@ -1044,8 +1044,10 @@ class Application {
         (!key.special && key.value == 'k');
     const bool down = (key.special && key.value == KEY_DOWN) ||
         (!key.special && key.value == 'j');
-    const bool left = key.special && key.value == KEY_LEFT;
-    const bool right = key.special && key.value == KEY_RIGHT;
+    const bool left = (key.special && key.value == KEY_LEFT) ||
+        (!key.special && key.value == 'h');
+    const bool right = (key.special && key.value == KEY_RIGHT) ||
+        (!key.special && key.value == 'l');
     const bool output = audio_selection_ == 0;
     auto &devices = output ? audio_view_.outputs : audio_view_.inputs;
     if (!key.special && key.value == 27) {
