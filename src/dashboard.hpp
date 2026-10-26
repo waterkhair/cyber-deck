@@ -302,17 +302,19 @@ class Renderer {
                {"Ctrl+u", "Clear entry"}};
     } else if (view.menu_focused) {
       section = std::string(kTabs[view.tab]) + " preview";
-      if (view.tab > 0) local.emplace_back("Alt+h/h/Left", "Previous");
-      if (view.tab + 1 < kTabs.size()) local.emplace_back("Alt+l/l/Right", "Next");
+      if (view.tab > 0) local.emplace_back("Alt+h/Left", "Previous");
+      if (view.tab + 1 < kTabs.size()) local.emplace_back("Alt+l/Right", "Next");
       local.emplace_back("Enter", "Open module");
     } else if (view.tab == 0) {
       section = "Dashboard";
     } else if (view.tab == 1) {
       section = "Terminal";
-      local = {{"Alt+h", "Previous tab"}, {"Alt+l", "Next / new tab"},
+      local = {{"Alt+h", "Previous tab"}, {"Alt+l", "Next tab"},
+               {"Alt+Tab", "New terminal"},
                {"Alt+1", "Terminal 1"}, {"Alt+2", "Terminal 2"},
                {"Alt+3", "Terminal 3"}, {"Alt+4", "Terminal 4"},
                {"Alt+x", "Close tab if 2+"},
+               {"Tab/Shift+Tab", "Send to shell"},
                {"Ctrl+c", "Interrupt"}, {"Ctrl+z", "Suspend"},
                {"Ctrl+d", "Exit shell"}};
     } else if (view.tab == 2) {
@@ -322,29 +324,26 @@ class Renderer {
                {"s", "Stop playback"}};
     } else if (view.tab == 3 && view.notes_section == 0) {
       section = "Notes / Text";
-      local = {{"Alt+h", "Previous tab"}, {"Alt+l", "Next tab"},
-               {"n", "New note"}, {"j", "Next note"},
-               {"k", "Previous note"}, {"Enter", "Edit note"},
-               {"Ctrl+o", "Save in nano"}, {"Ctrl+x", "Exit nano"}};
-      if (!view.note_editing) {
-        local[0] = {"Alt+h/h/Left", "Previous"};
-        local[1] = {"Alt+l/l/Right", "Next"};
-      }
+      if (view.note_editing)
+        local = {{"Ctrl+o", "Save in nano"}, {"Ctrl+x", "Exit nano"}};
+      else
+        local = {{"h/Left", "Previous tab"}, {"l/Right", "Next tab"},
+                 {"n", "New note"}, {"j", "Next note"},
+                 {"k", "Previous note"}, {"Enter", "Edit note"}};
     } else if (view.tab == 3) {
       section = "Notes / Voice";
-      local = {{"Alt+h/h/Left", "Previous"}, {"Alt+l/l/Right", "Next"}};
+      local = {{"h/Left", "Previous tab"}, {"l/Right", "Next tab"}};
       note = "Recording is not available yet";
     } else if (view.tab == 4) {
       section = "Web";
-      local = {{"Alt+h", "Previous tab"}, {"Alt+l", "Next / new tab"},
-               {"Alt+x", "Close tab if 2+"}};
+      local = {{"Alt+Tab", "New Web tab"}, {"Alt+x", "Close tab if 2+"}};
       if (view.web_browsing) {
         local.emplace_back("h/j/k/l", "Back / links / open");
         local.emplace_back("g", "Open URL in ELinks");
         local.emplace_back("q", "Exit ELinks page");
       } else {
-        local[0] = {"Alt+h/h/Left", "Previous"};
-        local[1] = {"Alt+l/l/Right", "Next / new"};
+        local.emplace_back("h/Left", "Previous tab");
+        local.emplace_back("l/Right", "Next tab");
         local.emplace_back("w", "Wikipedia search");
         local.emplace_back("b", "Browse URL");
         local.emplace_back("d", "DuckDuckGo search");
@@ -352,12 +351,12 @@ class Renderer {
       }
     } else if (view.tab == 5 && view.settings_selection == 0) {
       section = "Settings / Theme";
-      local = {{"Alt+h/h/Left", "Previous"}, {"Alt+l/l/Right", "Next"},
+      local = {{"h/Left", "Previous"}, {"l/Right", "Next"},
                {"j", "Next theme"}, {"k", "Previous theme"},
                {"Enter", "Apply theme"}};
     } else if (view.tab == 5 && view.settings_selection == 1) {
       section = "Settings / Network";
-      local = {{"Alt+h/h/Left", "Previous"}, {"Alt+l/l/Right", "Next"},
+      local = {{"h/Left", "Previous"}, {"l/Right", "Next"},
                {"j", "Next item"}, {"k", "Previous item"},
                {"Enter", "Connect selected"}, {"r", "Refresh / scan WiFi"},
                {"d", "Disconnect selected"}, {"w", "WiFi on/off"},
@@ -368,28 +367,40 @@ class Renderer {
                {"Enter", "Use device"}};
     } else if (view.tab == 5 && view.settings_selection == 2) {
       section = "Settings / Audio";
-      local = {{"Alt+h", "Previous section"}, {"Alt+l", "Next section"},
-               {"j", "Select input"}, {"k", "Select output"},
+      local = {{"j", "Select input"}, {"k", "Select output"},
                {"Enter", "Choose device"}, {"h/Left", "Volume down"},
                {"l/Right", "Volume up"}, {"r", "Refresh"}};
     } else if (view.tab == 5 && view.settings_selection == 4) {
       section = "Settings / Web";
-      local = {{"Alt+h/h/Left", "Previous"}, {"Alt+l/l/Right", "Next"},
+      local = {{"h/Left", "Previous"}, {"l/Right", "Next"},
                {"j", "Next option"}, {"k", "Previous option"},
                {"Enter", "Apply / toggle option"}};
       note = "ELinks cannot identify necessary cookies";
     } else if (view.tab == 5 && view.settings_selection == 5) {
       section = "Settings / Weather";
-      local = {{"Alt+h/h/Left", "Previous"}, {"Enter", "Set city"},
+      local = {{"h/Left", "Previous"}, {"Enter", "Set city"},
                {"r", "Refresh weather"}};
     } else if (view.tab == 5) {
       section = "Settings / Bluetooth";
-      local = {{"Alt+h/h/Left", "Previous"}, {"Alt+l/l/Right", "Next"},
+      local = {{"h/Left", "Previous"}, {"l/Right", "Next"},
                {"j", "Next device"}, {"k", "Previous device"},
                {"Enter", "Connect / pair"}, {"r", "Scan"},
                {"w", "Power on/off"}, {"p", "Pair"},
                {"d", "Disconnect"}, {"t", "Trust / untrust"},
                {"f", "Forget device"}};
+    }
+    if (view.help_dialog == HelpDialog::None && !view.menu_focused && !view.audio_picker) {
+      size_t position = 0, count = 0;
+      if (view.tab == 3) { position = view.notes_section; count = 2; }
+      else if (view.tab == 4) {
+        position = view.web_tab;
+        count = static_cast<size_t>(std::count(view.web_tabs.begin(), view.web_tabs.end(), true));
+      } else if (view.tab == 5) {
+        position = view.settings_selection;
+        count = kSettingsSections.size();
+      }
+      if (count && position > 0) local.emplace_back("Shift+Tab", "Previous top tab");
+      if (count && position + 1 < count) local.emplace_back("Tab", "Next top tab");
     }
     if (view.help_dialog == HelpDialog::None) {
       if (!view.audio_picker && !view.menu_focused) {
@@ -626,7 +637,7 @@ class Renderer {
     }
     if (tab == 1) {
       if (pane_rows > 3) draw_text(top + 3, left, cols,
-          "No terminal. Alt+l creates one.", muted_style());
+          "No terminal. Alt+Tab creates one.", muted_style());
     } else if (pane_rows > 3) {
       draw_text(top + 3, left, cols, "PLANNED", section_style());
     }
