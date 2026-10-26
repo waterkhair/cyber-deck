@@ -149,9 +149,10 @@ bool WaveBackend::tick() {
   if (result == 0 || (result < 0 && errno != ECHILD)) return false;
   active_pid_ = -1;
   view_.playing = kNoWaveStation;
-  view_.status = WIFEXITED(code) && WEXITSTATUS(code) == 0 ? "Stream ended" :
-                 WIFEXITED(code) ? "mpv exited with code " + std::to_string(WEXITSTATUS(code)) :
-                                   "Playback stopped";
+  view_.status = result < 0 ? "Stopped (mpv exited)" :
+                 WIFEXITED(code) && WEXITSTATUS(code) == 0 ? "Stopped (stream ended)" :
+                 WIFEXITED(code) ? "Stopped (mpv exit code " +
+                     std::to_string(WEXITSTATUS(code)) + ")" : "Stopped (playback ended)";
   return true;
 }
 
@@ -173,7 +174,7 @@ void WaveBackend::toggle(size_t index) {
   posix_spawn_file_actions_t actions;
   int error = ::posix_spawn_file_actions_init(&actions);
   if (error != 0) {
-    view_.status = "Cannot prepare mpv: " + std::string(std::strerror(error));
+    view_.status = "Stopped (cannot prepare mpv: " + std::string(std::strerror(error)) + ")";
     return;
   }
   error = ::posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
@@ -181,7 +182,7 @@ void WaveBackend::toggle(size_t index) {
   if (error == 0) error = ::posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
   if (error != 0) {
     ::posix_spawn_file_actions_destroy(&actions);
-    view_.status = "Cannot prepare mpv: " + std::string(std::strerror(error));
+    view_.status = "Stopped (cannot prepare mpv: " + std::string(std::strerror(error)) + ")";
     return;
   }
 #ifndef __ANDROID__
@@ -205,17 +206,16 @@ void WaveBackend::toggle(size_t index) {
   error = ::posix_spawnp(&pid, "mpv", &actions, nullptr, args.data(), environ);
   ::posix_spawn_file_actions_destroy(&actions);
   if (error != 0) {
-    view_.status = error == ENOENT ? "mpv is not installed" :
-                   "Cannot start mpv: " + std::string(std::strerror(error));
+    view_.status = error == ENOENT ? "Stopped (mpv is not installed)" :
+                   "Stopped (cannot start mpv: " + std::string(std::strerror(error)) + ")";
     return;
   }
   active_pid_ = pid;
   view_.playing = index;
 #ifdef __ANDROID__
-  view_.status = "mpv running in Termux";
+  view_.status = "Playing";
 #else
-  view_.status = script.empty() ? "mpv running; no Linux media status (mpv-mpris missing)"
-                                : "mpv running";
+  view_.status = script.empty() ? "Playing; Linux media status unavailable" : "Playing";
 #endif
 }
 
