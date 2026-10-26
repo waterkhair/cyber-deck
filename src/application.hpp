@@ -853,16 +853,19 @@ class Application {
     }
   }
 
-  void move_panel_tab(int direction) {
+  void move_panel_tab(int direction, bool create_at_end = false) {
     if (active_tab_ == 1) {
+      bool moved = false;
       for (int index = static_cast<int>(active_index_) + direction;
            index >= 0 && index < static_cast<int>(kMaxSessions); index += direction) {
         if (slots_[index]) {
           active_index_ = static_cast<size_t>(index);
           ui_dirty_ = true;
+          moved = true;
           break;
         }
       }
+      if (!moved && direction > 0 && create_at_end) create_new_slot();
     } else if (active_tab_ == 3) {
       const int next = static_cast<int>(notes_section_) + direction;
       if (next >= 0 && next < 2) {
@@ -870,7 +873,9 @@ class Application {
         ui_dirty_ = true;
       }
     } else if (active_tab_ == 4) {
-      switch_web_tab(direction);
+      if (direction > 0 && create_at_end && web_position() + 1 == web_order_.size())
+        create_web_tab();
+      else switch_web_tab(direction);
     } else if (active_tab_ == 5) {
       const int next = static_cast<int>(settings_selection_) + direction;
       if (next >= 0 && next < static_cast<int>(kSettingsSections.size()))
@@ -939,9 +944,8 @@ class Application {
       ui_dirty_ = true;
       return true;
     }
-    if (!menu_focused_ && !overlay_open && active_tab_ == 1 &&
-        (value == 'h' || value == 'l')) {
-      move_panel_tab(value == 'h' ? -1 : 1);
+    if (!menu_focused_ && !overlay_open && (value == 'h' || value == 'l')) {
+      move_panel_tab(value == 'h' ? -1 : 1, true);
       return true;
     }
     auto open_tab = [this](size_t tab) {
@@ -1597,23 +1601,10 @@ class Application {
       return;
     }
     const bool panel_overlay = wifi_password_prompt_ || wifi_forget_prompt_ || audio_picker_;
-    const bool note_editor_input = active_tab_ == 3 && notes_section_ == 0 && note_editor_;
     if (!panel_overlay && active_tab_ != 1 &&
         ((!key.special && key.value == 9) ||
          (key.special && key.value == KEY_BTAB))) {
       move_panel_tab(key.special ? -1 : 1);
-      return;
-    }
-    const bool previous = (key.special && key.value == KEY_LEFT) ||
-        (!key.special && key.value == 'h');
-    const bool next = (key.special && key.value == KEY_RIGHT) ||
-        (!key.special && key.value == 'l');
-    const bool embedded_input = note_editor_input ||
-        (active_tab_ == 4 && web_tab().browser && !web_tab().browser_closing);
-    const bool panel_tabs = active_tab_ == 3 || active_tab_ == 4 || active_tab_ == 5;
-    if (!panel_overlay && panel_tabs && !embedded_input &&
-        !(active_tab_ == 5 && audio_page_) && (previous || next)) {
-      move_panel_tab(previous ? -1 : 1);
       return;
     }
     if (active_tab_ == 2) {

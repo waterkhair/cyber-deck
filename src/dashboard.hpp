@@ -309,7 +309,7 @@ class Renderer {
       section = "Dashboard";
     } else if (view.tab == 1) {
       section = "Terminal";
-      local = {{"Alt+h", "Previous tab"}, {"Alt+l", "Next tab"},
+      local = {{"Alt+h", "Previous tab"}, {"Alt+l", "Next / new tab"},
                {"Alt+Tab", "New terminal"},
                {"Alt+1", "Terminal 1"}, {"Alt+2", "Terminal 2"},
                {"Alt+3", "Terminal 3"}, {"Alt+4", "Terminal 4"},
@@ -324,26 +324,25 @@ class Renderer {
                {"s", "Stop playback"}};
     } else if (view.tab == 3 && view.notes_section == 0) {
       section = "Notes / Text";
+      local = {{"Alt+h", "Previous tab"}, {"Alt+l", "Next tab"}};
       if (view.note_editing)
-        local = {{"Ctrl+o", "Save in nano"}, {"Ctrl+x", "Exit nano"}};
+        local.insert(local.end(), {{"Ctrl+o", "Save in nano"}, {"Ctrl+x", "Exit nano"}});
       else
-        local = {{"h/Left", "Previous tab"}, {"l/Right", "Next tab"},
-                 {"n", "New note"}, {"j", "Next note"},
-                 {"k", "Previous note"}, {"Enter", "Edit note"}};
+        local.insert(local.end(), {{"n", "New note"}, {"j", "Next note"},
+                 {"k", "Previous note"}, {"Enter", "Edit note"}});
     } else if (view.tab == 3) {
       section = "Notes / Voice";
-      local = {{"h/Left", "Previous tab"}, {"l/Right", "Next tab"}};
+      local = {{"Alt+h", "Previous tab"}, {"Alt+l", "Next tab"}};
       note = "Recording is not available yet";
     } else if (view.tab == 4) {
       section = "Web";
-      local = {{"Alt+Tab", "New Web tab"}, {"Alt+x", "Close tab if 2+"}};
+      local = {{"Alt+h", "Previous tab"}, {"Alt+l", "Next / new tab"},
+               {"Alt+Tab", "New Web tab"}, {"Alt+x", "Close tab if 2+"}};
       if (view.web_browsing) {
         local.emplace_back("h/j/k/l", "Back / links / open");
         local.emplace_back("g", "Open URL in ELinks");
         local.emplace_back("q", "Exit ELinks page");
       } else {
-        local.emplace_back("h/Left", "Previous tab");
-        local.emplace_back("l/Right", "Next tab");
         local.emplace_back("w", "Wikipedia search");
         local.emplace_back("b", "Browse URL");
         local.emplace_back("d", "DuckDuckGo search");
@@ -351,12 +350,12 @@ class Renderer {
       }
     } else if (view.tab == 5 && view.settings_selection == 0) {
       section = "Settings / Theme";
-      local = {{"h/Left", "Previous"}, {"l/Right", "Next"},
+      local = {{"Alt+h", "Previous"}, {"Alt+l", "Next"},
                {"j", "Next theme"}, {"k", "Previous theme"},
                {"Enter", "Apply theme"}};
     } else if (view.tab == 5 && view.settings_selection == 1) {
       section = "Settings / Network";
-      local = {{"h/Left", "Previous"}, {"l/Right", "Next"},
+      local = {{"Alt+h", "Previous"}, {"Alt+l", "Next"},
                {"j", "Next item"}, {"k", "Previous item"},
                {"Enter", "Connect selected"}, {"r", "Refresh / scan WiFi"},
                {"d", "Disconnect selected"}, {"w", "WiFi on/off"},
@@ -367,22 +366,23 @@ class Renderer {
                {"Enter", "Use device"}};
     } else if (view.tab == 5 && view.settings_selection == 2) {
       section = "Settings / Audio";
-      local = {{"j", "Select input"}, {"k", "Select output"},
+      local = {{"Alt+h", "Previous"}, {"Alt+l", "Next"},
+               {"j", "Select input"}, {"k", "Select output"},
                {"Enter", "Choose device"}, {"h/Left", "Volume down"},
                {"l/Right", "Volume up"}, {"r", "Refresh"}};
     } else if (view.tab == 5 && view.settings_selection == 4) {
       section = "Settings / Web";
-      local = {{"h/Left", "Previous"}, {"l/Right", "Next"},
+      local = {{"Alt+h", "Previous"}, {"Alt+l", "Next"},
                {"j", "Next option"}, {"k", "Previous option"},
                {"Enter", "Apply / toggle option"}};
       note = "ELinks cannot identify necessary cookies";
     } else if (view.tab == 5 && view.settings_selection == 5) {
       section = "Settings / Weather";
-      local = {{"h/Left", "Previous"}, {"Enter", "Set city"},
+      local = {{"Alt+h", "Previous"}, {"Enter", "Set city"},
                {"r", "Refresh weather"}};
     } else if (view.tab == 5) {
       section = "Settings / Bluetooth";
-      local = {{"h/Left", "Previous"}, {"l/Right", "Next"},
+      local = {{"Alt+h", "Previous"}, {"Alt+l", "Next"},
                {"j", "Next device"}, {"k", "Previous device"},
                {"Enter", "Connect / pair"}, {"r", "Scan"},
                {"w", "Power on/off"}, {"p", "Pair"},
