@@ -50,8 +50,8 @@ constexpr int kMaxCols = 400;
 
 struct UiLayout {
   int inset = 1;
-  int terminal_top() const { return inset + 2; }  // Menu and one spacer row.
-  int reserved_rows() const { return 2 * inset + 3; }  // Menu, spacer, footer, margins.
+  int terminal_top() const { return inset + 4; }  // Three-row menu and one spacer row.
+  int reserved_rows() const { return 2 * inset + 5; }  // Menu, spacer, footer, margins.
 };
 
 inline UiLayout ui_layout() {

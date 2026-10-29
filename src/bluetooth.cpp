@@ -437,7 +437,11 @@ struct BluetoothBackend::Impl {
     self->busy = false;
     if (reply) {
       g_variant_unref(reply);
-      self->status = "Done";
+      if (call->action == Action::Connect)
+        self->status = "Connected to " + self->device_name(call->path);
+      else if (call->action == Action::Pair)
+        self->status = "Paired with " + self->device_name(call->path);
+      else self->status = "Done";
     } else if (!self->stopping) {
       self->status = "Bluetooth: " + error_text(error);
       error = nullptr;
@@ -461,7 +465,9 @@ struct BluetoothBackend::Impl {
   void call(Action action, const std::string &path, const char *interface,
             const char *method, GVariant *parameters, bool connect_after = false) {
     busy = true;
-    status = "Working...";
+    if (action == Action::Connect) status = "Connecting to " + device_name(path) + "...";
+    else if (action == Action::Pair) status = "Pairing with " + device_name(path) + "...";
+    else status = "Working...";
     publish();
     ++pending_calls;
     g_dbus_connection_call(bus, kBluez, path.c_str(), interface, method,

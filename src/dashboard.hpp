@@ -3,7 +3,8 @@
 #include "audio.hpp"
 #include "bluetooth.hpp"
 #include "cookies.hpp"
-#include "menu_art.hpp"
+#include "hardware.hpp"
+#include "preferences.hpp"
 #include "system.hpp"
 #include "terminal.hpp"
 #include "theme.hpp"
@@ -13,6 +14,7 @@
 #include "web.hpp"
 
 #include <ctime>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <utility>
@@ -21,18 +23,27 @@ namespace cyberdeck {
 
 constexpr std::array<const char *, 6> kTabs = {
     "Dashboard", "Terminal", "Media", "Notes", "Web", "Settings"};
-constexpr std::array<const char *, 6> kSettingsSections = {
-    "Theme", "Network", "Audio", "Bluetooth", "Web", "Weather"};
+constexpr std::array<const char *, 4> kSettingsSections = {
+    "General", "Interface", "Devices", "Apps"};
 enum class HelpDialog { None, Confirm, Password, TextEntry };
+enum class TextPrompt { None, StationName, StationUrl, NoteName, WebQuery, WeatherCity };
 
 struct ChromeView {
   size_t tab = 0;
   size_t menu_selection = 0;
   bool menu_focused = true;
   HelpDialog help_dialog = HelpDialog::None;
+  TextPrompt text_prompt = TextPrompt::None;
   Theme theme = Theme::Husky;
   size_t settings_selection = 0;
-  size_t theme_selection = 0;
+  size_t settings_item = 0;
+  std::array<bool, 2> general_expanded{};
+  std::array<bool, 3> interface_expanded{};
+  std::array<bool, 5> device_expanded{};
+  bool device_content_focused = false;
+  bool vi_keys = false;
+  bool unicode_glyphs = true;
+  std::array<bool, 4> dashboard_widgets{{true, true, true, true}};
   CookiePolicy cookie_policy = CookiePolicy::Block;
   size_t cookie_selection = 0;
   bool show_web_header_links = false;
@@ -44,6 +55,12 @@ struct ChromeView {
   size_t audio_selection = 0;
   size_t audio_picker_selection = 0;
   bool audio_picker = false;
+  bool wifi_picker = false;
+  bool bluetooth_picker = false;
+  bool hardware_details_open = false;
+  size_t storage_selection = 0;
+  size_t peripheral_selection = 0;
+  HardwareSnapshot hardware;
   AudioSnapshot audio;
   size_t bluetooth_selection = 0;
   BluetoothSnapshot bluetooth;
@@ -59,12 +76,14 @@ struct ChromeView {
   bool web_browsing = false;
   SystemOverview overview;
   WeatherSnapshot weather;
+  std::string notice;
   std::array<bool, kMaxSessions> terminals{};
   size_t active_terminal = 0;
 };
 
 struct ModalView {
-  enum class Kind { None, Confirm, Password, Info, AudioPicker, TextEntry } kind = Kind::None;
+  enum class Kind { None, Confirm, Password, Info, AudioPicker, NetworkPicker,
+                    BluetoothPicker, HardwareDetails, TextEntry } kind = Kind::None;
   std::string message;
   std::string detail;
   std::string accept_label;
@@ -85,6 +104,7 @@ class Renderer {
     pairs_.clear();
     next_pair_ = 5;
     chrome_colors_ = false;
+    menu_color_ = false;
     set_host_background(theme);
     if (!has_colors() || COLORS < 8 || COLOR_PAIRS <= 4) return;
     if (theme == Theme::Greenline) {
@@ -99,6 +119,12 @@ class Renderer {
                                  extended ? 22 : COLOR_GREEN) == OK &&
                        init_pair(4, extended ? accent : COLOR_BLACK,
                                  extended ? 22 : COLOR_GREEN) == OK;
+      const short selection_background = extended ? 22 : COLOR_GREEN;
+      if (chrome_colors_ && COLOR_PAIRS > 5 &&
+          init_pair(5, selection_background, background) == OK) {
+        menu_color_ = true;
+        next_pair_ = 6;
+      }
       return;
     }
     const short background = theme == Theme::Synthwave && COLORS >= 256 ? 17 :
@@ -110,10 +136,15 @@ class Renderer {
                      init_pair(2, accent, background) == OK &&
                      init_pair(3, COLOR_BLACK, selection) == OK &&
                      init_pair(4, COLOR_BLACK, theme == Theme::Synthwave ? accent : selection) == OK;
+    if (chrome_colors_ && COLOR_PAIRS > 5 && init_pair(5, selection, background) == OK) {
+      menu_color_ = true;
+      next_pair_ = 6;
+    }
   }
 
   void draw(TerminalModel *model, const ChromeView &view,
             const std::string &status, const ModalView &modal) {
+    unicode_glyphs_ = view.unicode_glyphs;
     int host_rows = 0, host_cols = 0;
     getmaxyx(stdscr, host_rows, host_cols);
     if (modal.kind != ModalView::Kind::None) {
@@ -121,6 +152,12 @@ class Renderer {
       erase();
       if (modal.kind == ModalView::Kind::AudioPicker)
         draw_audio_picker(view, host_rows, host_cols);
+      else if (modal.kind == ModalView::Kind::NetworkPicker)
+        draw_network_picker(view, host_rows, host_cols);
+      else if (modal.kind == ModalView::Kind::BluetoothPicker)
+        draw_bluetooth_picker(view, host_rows, host_cols);
+      else if (modal.kind == ModalView::Kind::HardwareDetails)
+        draw_hardware_details(view, host_rows, host_cols);
       else if (modal.kind == ModalView::Kind::Info)
         draw_help(view, host_rows, host_cols);
       else
@@ -236,6 +273,12 @@ class Renderer {
   attr_t selected_style() const {
     return A_BOLD | (chrome_colors_ ? COLOR_PAIR(3) : A_REVERSE);
   }
+  attr_t menu_selected_style() const {
+    return menu_color_ ? A_BOLD | COLOR_PAIR(5) : section_style();
+  }
+  attr_t menu_selected_text_style() const {
+    return section_style();
+  }
   attr_t alert_style() const {
     return A_BOLD | (chrome_colors_ ? COLOR_PAIR(4) : A_REVERSE);
   }
@@ -277,34 +320,46 @@ class Renderer {
   void draw_help(const ChromeView &view, int rows, int cols) {
     if (rows <= 0 || cols <= 0) return;
     using Shortcut = std::pair<std::string, std::string>;
-    const std::vector<Shortcut> global = {
+    std::vector<Shortcut> global = {
         {"Alt+d", "Dashboard"}, {"Alt+t", "Terminal"},
         {"Alt+m", "Media"},
         {"Alt+w", "Web"}, {"Alt+s", "Settings"},
         {"Alt+q", "Quit"}, {"Alt+Esc", "Back / cancel"},
         {"Shift+Alt+?", "Toggle Help"}};
+    if (view.help_dialog == HelpDialog::None || view.help_dialog == HelpDialog::TextEntry)
+      global.insert(global.begin() + 3, {"Alt+n", "Notes"});
     std::string section;
     std::vector<Shortcut> local;
     std::string note;
     if (view.help_dialog == HelpDialog::Confirm) {
       section = "Confirmation";
-      local = {{"h", "Select Yes"}, {"l", "Select No"},
-               {"Left", "Select Yes"}, {"Right", "Select No"},
+      local = {{"Left", "Select Yes"}, {"Right", "Select No"},
                {"Tab", "Change choice"}, {"Enter", "Use choice"},
                {"Alt+y", "Yes"}, {"Alt+n", "No"}};
+      if (view.vi_keys) {
+        local.emplace_back("h", "Select Yes");
+        local.emplace_back("l", "Select No");
+      }
     } else if (view.help_dialog == HelpDialog::Password) {
       section = "Password prompt";
       local = {{"Enter", "Submit"}, {"Backspace", "Delete"},
                {"Left", "Choose action"}, {"Right", "Choose action"}};
     } else if (view.help_dialog == HelpDialog::TextEntry) {
-      section = "Text prompt";
-      local = {{"Enter", "Continue / save"}, {"Backspace", "Delete"},
+      section = view.text_prompt == TextPrompt::StationName ? "Add station / Name" :
+          view.text_prompt == TextPrompt::StationUrl ? "Add station / Stream URL" :
+          view.text_prompt == TextPrompt::NoteName ? "New note / Name" :
+          view.text_prompt == TextPrompt::WebQuery ? "Web / Search or URL" :
+          view.text_prompt == TextPrompt::WeatherCity ? "General / Weather / City" : "Text prompt";
+      const char *submit = view.text_prompt == TextPrompt::StationName ? "Next: stream URL" :
+          view.text_prompt == TextPrompt::NoteName ? "Create note" :
+          view.text_prompt == TextPrompt::WebQuery ? "Open page" : "Save";
+      local = {{"Enter", submit}, {"Backspace", "Delete"},
                {"Ctrl+u", "Clear entry"}};
     } else if (view.menu_focused) {
       section = std::string(kTabs[view.tab]) + " preview";
       if (view.tab > 0) local.emplace_back("Alt+h/Left", "Previous");
       if (view.tab + 1 < kTabs.size()) local.emplace_back("Alt+l/Right", "Next");
-      local.emplace_back("Enter", "Open module");
+      if (view.tab != 0) local.emplace_back("Enter", "Open module");
     } else if (view.tab == 0) {
       section = "Dashboard";
     } else if (view.tab == 1) {
@@ -319,7 +374,8 @@ class Renderer {
                {"Ctrl+d", "Exit shell"}};
     } else if (view.tab == 2) {
       section = "Media / Wave";
-      local = {{"j", "Next station"}, {"k", "Previous station"},
+      local = {{view.vi_keys ? "j/Down" : "Down", "Next station"},
+               {view.vi_keys ? "k/Up" : "Up", "Previous station"},
                {"Enter", "Play / stop"}, {"a", "Add station"},
                {"s", "Stop playback"}};
     } else if (view.tab == 3 && view.notes_section == 0) {
@@ -328,8 +384,10 @@ class Renderer {
       if (view.note_editing)
         local.insert(local.end(), {{"Ctrl+o", "Save in nano"}, {"Ctrl+x", "Exit nano"}});
       else
-        local.insert(local.end(), {{"n", "New note"}, {"j", "Next note"},
-                 {"k", "Previous note"}, {"Enter", "Edit note"}});
+        local.insert(local.end(), {{"n", "New note"},
+                 {view.vi_keys ? "j/Down" : "Down", "Next note"},
+                 {view.vi_keys ? "k/Up" : "Up", "Previous note"},
+                 {"Enter", "Edit note"}});
     } else if (view.tab == 3) {
       section = "Notes / Voice";
       local = {{"Alt+h", "Previous tab"}, {"Alt+l", "Next tab"}};
@@ -348,48 +406,100 @@ class Renderer {
         local.emplace_back("d", "DuckDuckGo search");
         local.emplace_back("g", "Google search");
       }
+    } else if (view.tab == 5 && view.hardware_details_open) {
+      section = "Settings / Device details";
+      local = {{"Alt+Esc", "Close details"}};
+    } else if (view.tab == 5 && view.settings_selection == 0 && view.settings_item <= 1) {
+      section = "Settings / General / Navigation";
+      local = {{view.vi_keys ? "j/k + arrows" : "Up/Down", "Move through settings"},
+               {"Enter", view.settings_item == 0 ? "Expand / collapse" : "Toggle vi motion"}};
     } else if (view.tab == 5 && view.settings_selection == 0) {
-      section = "Settings / Theme";
-      local = {{"Alt+h", "Previous"}, {"Alt+l", "Next"},
-               {"j", "Next theme"}, {"k", "Previous theme"},
-               {"Enter", "Apply theme"}};
+      section = "Settings / General / Weather";
+      local = {{view.vi_keys ? "j/k + arrows" : "Up/Down", "Move through settings"},
+               {"Enter", view.settings_item == 2 ? "Expand / collapse" : "Set city"},
+               {"r", "Refresh weather"}};
     } else if (view.tab == 5 && view.settings_selection == 1) {
-      section = "Settings / Network";
-      local = {{"Alt+h", "Previous"}, {"Alt+l", "Next"},
-               {"j", "Next item"}, {"k", "Previous item"},
-               {"Enter", "Connect selected"}, {"r", "Refresh / scan WiFi"},
-               {"d", "Disconnect selected"}, {"w", "WiFi on/off"},
-               {"p", "WiFi password"}, {"f", "Forget WiFi"}};
+      section = "Settings / Interface";
+      local = {{view.vi_keys ? "j/k + arrows" : "Up/Down", "Move through options"},
+               {"Enter", view.settings_item == 0 || view.settings_item == 4 ||
+                   view.settings_item == 9 ? "Expand / collapse" :
+                   view.settings_item < 4 ? "Apply theme" :
+                   view.settings_item < 9 ? "Toggle widget" : "Choose glyph mode"}};
+    } else if (view.tab == 5 && view.wifi_picker) {
+      section = "Settings / Network connections";
+      local = {{view.vi_keys ? "j/k + arrows" : "Up/Down", "Select connection"},
+               {"Enter", "Connect selected"}, {"r", "Scan WiFi"},
+               {"d", "Disconnect"}, {"w", "Toggle WiFi radio"},
+               {"p", "Replace password"}, {"f", "Forget WiFi"}};
+    } else if (view.tab == 5 && view.bluetooth_picker) {
+      section = "Settings / Bluetooth devices";
+      local = {{view.vi_keys ? "j/k + arrows" : "Up/Down", "Select device"},
+               {"Enter", "Connect / pair"}, {"r", "Scan"},
+               {"w", "Power on/off"}, {"p", "Pair"}, {"d", "Disconnect"},
+               {"t", "Trust / untrust"}, {"f", "Forget"}};
     } else if (view.tab == 5 && view.audio_picker) {
       section = "Settings / Audio picker";
-      local = {{"j", "Next device"}, {"k", "Previous device"},
+      local = {{view.vi_keys ? "j/Down" : "Down", "Next device"},
+               {view.vi_keys ? "k/Up" : "Up", "Previous device"},
                {"Enter", "Use device"}};
-    } else if (view.tab == 5 && view.settings_selection == 2) {
-      section = "Settings / Audio";
-      local = {{"Alt+h", "Previous"}, {"Alt+l", "Next"},
-               {"j", "Select input"}, {"k", "Select output"},
-               {"Enter", "Choose device"}, {"h/Left", "Volume down"},
-               {"l/Right", "Volume up"}, {"r", "Refresh"}};
-    } else if (view.tab == 5 && view.settings_selection == 4) {
-      section = "Settings / Web";
-      local = {{"Alt+h", "Previous"}, {"Alt+l", "Next"},
-               {"j", "Next option"}, {"k", "Previous option"},
+    } else if (view.tab == 5 && view.settings_selection == 2 && !view.device_content_focused) {
+      section = "Settings / Devices";
+      local = {{"1-5", "Select section"},
+               {view.vi_keys ? "j/k + arrows" : "Up/Down", "Select section"},
+               {"Enter", "Expand / collapse"}};
+      if (view.device_expanded[view.settings_item])
+        local.emplace_back("Down", "Focus expanded content");
+      if (view.settings_item > 0 && view.device_expanded[view.settings_item - 1])
+        local.emplace_back("Up", "Last item above");
+      if (view.settings_item >= 3) local.emplace_back("r", "Refresh hardware");
+    } else if (view.tab == 5 && view.settings_selection == 2 && view.settings_item == 0) {
+      section = "Settings / Devices / Network";
+      local = {{"Enter", "Browse WiFi and LAN"}, {"r", "Scan WiFi"},
+               {"w", "Toggle WiFi radio"}, {"Down", "Next section"},
+               {"Alt+Esc", "Back to section"}};
+    } else if (view.tab == 5 && view.settings_selection == 2 && view.settings_item == 1) {
+      section = "Settings / Devices / Audio";
+      local = {{view.vi_keys ? "j/k + arrows" : "Up/Down", "Select audio control"},
+               {"Enter", "Choose device"}, {view.vi_keys ? "h/Left" : "Left", "Volume down"},
+               {view.vi_keys ? "l/Right" : "Right", "Volume up"}, {"r", "Refresh"},
+               {"Down on Input", "Next section"}};
+    } else if (view.tab == 5 && view.settings_selection == 2 && view.settings_item == 2) {
+      section = "Settings / Devices / Bluetooth";
+      local = {{"Enter", "Add / pair device"}, {"r", "Scan"},
+               {"w", "Power on/off"}, {"Down", "Next section"},
+               {"Alt+Esc", "Back to section"}};
+    } else if (view.tab == 5 && view.settings_selection == 2 && view.settings_item == 3) {
+      section = "Settings / Devices / Storage";
+      local = {{view.vi_keys ? "j/k + arrows" : "Up/Down", "Browse drives"},
+               {"Enter", "Device details"}, {"r", "Refresh"},
+               {"Down at end", "Next section"},
+               {"Alt+Esc", "Back to section"}};
+    } else if (view.tab == 5 && view.settings_selection == 2 && view.settings_item == 4) {
+      section = "Settings / Devices / Peripherals";
+      local = {{view.vi_keys ? "j/k + arrows" : "Up/Down", "Browse USB devices"},
+               {"Enter", "Device details"}, {"r", "Refresh"},
+               {"Alt+Esc", "Back to section"}};
+    } else if (view.tab == 5 && view.settings_selection == 3) {
+      section = "Settings / Apps / Web";
+      local = {{view.vi_keys ? "j/k + arrows" : "Up/Down", "Move through options"},
                {"Enter", "Apply / toggle option"}};
-      note = "ELinks cannot identify necessary cookies";
-    } else if (view.tab == 5 && view.settings_selection == 5) {
-      section = "Settings / Weather";
-      local = {{"Alt+h", "Previous"}, {"Enter", "Set city"},
-               {"r", "Refresh weather"}};
-    } else if (view.tab == 5) {
-      section = "Settings / Bluetooth";
-      local = {{"Alt+h", "Previous"}, {"Alt+l", "Next"},
-               {"j", "Next device"}, {"k", "Previous device"},
-               {"Enter", "Connect / pair"}, {"r", "Scan"},
-               {"w", "Power on/off"}, {"p", "Pair"},
-               {"d", "Disconnect"}, {"t", "Trust / untrust"},
-               {"f", "Forget device"}};
     }
-    if (view.help_dialog == HelpDialog::None && !view.menu_focused && !view.audio_picker) {
+    if (view.tab == 5 && !view.menu_focused && !view.hardware_details_open &&
+        !view.audio_picker && !view.wifi_picker && !view.bluetooth_picker) {
+      bool collapsible = false;
+      if (view.settings_selection == 0)
+        collapsible = view.general_expanded[view.settings_item < 2 ? 0 : 1];
+      else if (view.settings_selection == 1)
+        collapsible = view.interface_expanded[
+            view.settings_item < 4 ? 0 : view.settings_item < 9 ? 1 : 2];
+      else if (view.settings_selection == 2)
+        collapsible = view.device_expanded[view.settings_item] &&
+                      !(view.settings_item == 1 && view.device_content_focused);
+      if (collapsible) local.emplace_back("h", "Collapse section");
+    }
+    if (view.help_dialog == HelpDialog::None && !view.menu_focused &&
+        !view.hardware_details_open && !view.audio_picker &&
+        !view.wifi_picker && !view.bluetooth_picker) {
       size_t position = 0, count = 0;
       if (view.tab == 3) { position = view.notes_section; count = 2; }
       else if (view.tab == 4) {
@@ -398,19 +508,22 @@ class Renderer {
       } else if (view.tab == 5) {
         position = view.settings_selection;
         count = kSettingsSections.size();
+        local.emplace_back("Alt+h/Alt+l", "Previous/next section");
       }
-      if (count && position > 0) local.emplace_back("Shift+Tab", "Previous top tab");
-      if (count && position + 1 < count) local.emplace_back("Tab", "Next top tab");
+      const char *previous = view.tab == 5 ? "Previous section" : "Previous top tab";
+      const char *next = view.tab == 5 ? "Next section" : "Next top tab";
+      if (count && position > 0) local.emplace_back("Shift+Tab", previous);
+      if (count && position + 1 < count) local.emplace_back("Tab", next);
     }
     if (view.help_dialog == HelpDialog::None) {
-      if (!view.audio_picker && !view.menu_focused) {
+      if (!view.hardware_details_open && !view.audio_picker && !view.wifi_picker && !view.bluetooth_picker &&
+          !view.menu_focused) {
         if (view.tab == 1) local.emplace_back("Esc", "Send to shell");
         else if (view.tab == 3 && view.note_editing)
           local.emplace_back("Esc", "Send to nano");
         else if (view.tab == 4 && view.web_browsing)
           local.emplace_back("Esc", "ELinks menu");
       }
-      local.emplace_back("Alt+n", "Notes");
     }
 
     const int columns = cols >= 84 ? 3 : cols >= 48 ? 2 : 1;
@@ -447,7 +560,6 @@ class Renderer {
     draw_section(section, local);
     if (!note.empty() && row < rows)
       draw_text(row++, left, grid_width, note, muted_style());
-    if (row < rows) draw_centered(row, cols, "Alt+Esc closes Help", muted_style());
   }
 
   void draw_modal(const ModalView &modal, int rows, int cols) {
@@ -456,7 +568,6 @@ class Renderer {
     if (modal.kind == ModalView::Kind::TextEntry) {
       draw_centered(center - 2, cols, modal.message, section_style());
       draw_centered(center, cols, modal.detail, modal_style(), std::max(1, cols - 4));
-      draw_centered(center + 2, cols, modal.accept_label, muted_style());
       return;
     }
     const bool password = modal.kind == ModalView::Kind::Password;
@@ -489,6 +600,45 @@ class Renderer {
     }
   }
 
+  void draw_hardware_details(const ChromeView &view, int rows, int cols) {
+    if (rows <= 0 || cols <= 0) return;
+    std::vector<std::string> lines;
+    std::string title;
+    if (view.settings_item == 3 && view.storage_selection < view.hardware.drives.size()) {
+      const auto &drive = view.hardware.drives[view.storage_selection];
+      title = "Storage details";
+      lines.push_back("Device: /dev/" + drive.name);
+      if (!drive.model.empty()) lines.push_back("Model: " + drive.model);
+      lines.push_back("Mount: " + (drive.mountpoint.empty() ? "Not mounted" : drive.mountpoint));
+      if (!drive.filesystem.empty()) lines.push_back("Filesystem: " + drive.filesystem);
+      if (!drive.mountpoint.empty())
+        lines.push_back("Free: " + storage_size(drive.free_bytes));
+      lines.push_back("Total: " + storage_size(drive.size_bytes));
+      if (drive.usb) lines.push_back("Connection: USB");
+    } else if (view.settings_item == 4 &&
+               view.peripheral_selection < view.hardware.usb_devices.size()) {
+      const auto &device = view.hardware.usb_devices[view.peripheral_selection];
+      title = "Peripheral details";
+      lines.push_back("Name: " + device.name);
+      if (!device.manufacturer.empty() && device.manufacturer != device.name)
+        lines.push_back("Maker: " + device.manufacturer);
+      lines.push_back("USB ID: " + device.vendor_id + ":" + device.product_id);
+      if (!device.serial.empty()) lines.push_back("Serial: " + device.serial);
+      if (!device.speed.empty()) lines.push_back("Speed: " + device.speed + " Mb/s");
+      if (!device.port.empty()) lines.push_back("Port: " + device.port);
+    } else return;
+    const int width = std::max(1, cols - 4);
+    const int top = std::max(0, (rows - static_cast<int>(lines.size()) - 2) / 2);
+    draw_centered(top, cols, title, section_style(), width);
+    int line_width = 0;
+    for (const auto &line : lines)
+      line_width = std::max(line_width, std::min(width, static_cast<int>(line.size())));
+    const int left = std::max(0, (cols - line_width) / 2);
+    for (size_t i = 0; i < lines.size() && top + 2 + static_cast<int>(i) < rows - 1; ++i)
+      draw_text(top + 2 + static_cast<int>(i), left, std::min(width, cols - left),
+                lines[i], modal_style());
+  }
+
   void draw_audio_picker(const ChromeView &view, int rows, int cols) {
     if (rows <= 0 || cols <= 0) return;
     const bool output = view.audio_selection == 0;
@@ -501,7 +651,6 @@ class Renderer {
     if (devices.empty()) {
       draw_centered(top + 2, cols,
                     output ? "No outputs available" : "No inputs available", modal_style(), width);
-      draw_centered(top + 3, cols, "Alt+Esc back", muted_style(), width);
       return;
     }
     const size_t selected = std::min(view.audio_picker_selection, devices.size() - 1);
@@ -517,6 +666,83 @@ class Renderer {
     }
   }
 
+  void draw_network_picker(const ChromeView &view, int rows, int cols) {
+    if (rows <= 0 || cols <= 0) return;
+    const size_t wired = view.wifi.wired.size();
+    const size_t total = wired + view.wifi.networks.size();
+    const int visible = std::min<int>(static_cast<int>(total),
+                                     std::min(10, std::max(1, rows - 5)));
+    const int top = std::max(0, (rows - visible - 3) / 2);
+    const int width = std::max(1, cols - 4);
+    draw_centered(top, cols, "Select connection", section_style(), width);
+    if (total == 0)
+      draw_centered(top + 2, cols, "No connections found", muted_style(), width);
+    else {
+      const size_t selected = std::min(view.wifi_selection, total - 1);
+      const size_t start = selected >= static_cast<size_t>(visible) ?
+          selected - static_cast<size_t>(visible) + 1 : 0;
+      for (int row = 0; row < visible; ++row) {
+        const size_t index = start + static_cast<size_t>(row);
+        if (index >= total) break;
+        std::string label;
+        if (index < wired) {
+          const auto &lan = view.wifi.wired[index];
+          label = std::string(lan.connected ? "* " : "  ") + "LAN " + lan.interface_name +
+                  (lan.connected ? "  connected" : lan.carrier ? "  available" : "  no cable");
+        } else {
+          const auto &network = view.wifi.networks[index - wired];
+          label = std::string(network.connected ? "* " : "  ") + network.ssid;
+          label += network.visible ? "  " + std::to_string(network.strength) + "%" : "  out of range";
+          if (network.security == WifiSecurity::Personal) label += "  lock";
+          if (!network.saved_uuid.empty()) label += "  saved";
+        }
+        draw_centered(top + 2 + row, cols, label,
+                      index == selected ? modal_selected_style() : modal_style(), width);
+      }
+    }
+    if (!view.notice.empty())
+      draw_centered(top + visible + 3, cols, view.notice, section_style(), width);
+  }
+
+  void draw_bluetooth_picker(const ChromeView &view, int rows, int cols) {
+    if (rows <= 0 || cols <= 0) return;
+    const auto &devices = view.bluetooth.devices;
+    const int visible = std::min<int>(static_cast<int>(devices.size()),
+                                     std::min(10, std::max(1, rows - 8)));
+    const int top = std::max(0, (rows - visible - 3) / 2);
+    const int width = std::max(1, cols - 4);
+    draw_centered(top, cols, "Select Bluetooth device", section_style(), width);
+    if (devices.empty())
+      draw_centered(top + 2, cols, "No devices found", muted_style(), width);
+    else {
+      const size_t selected = std::min(view.bluetooth_selection, devices.size() - 1);
+      const size_t start = selected >= static_cast<size_t>(visible) ?
+          selected - static_cast<size_t>(visible) + 1 : 0;
+      for (int row = 0; row < visible; ++row) {
+        const size_t index = start + static_cast<size_t>(row);
+        if (index >= devices.size()) break;
+        const auto &device = devices[index];
+        const char *state = device.connected ? "connected" : device.paired ? "paired" : "found";
+        const std::string label = std::string(device.connected ? "* " : "  ") +
+                                  device.name + "  " + state;
+        draw_centered(top + 2 + row, cols, label,
+                      index == selected ? modal_selected_style() : modal_style(), width);
+      }
+    }
+    const std::string status = view.bluetooth.status.rfind("Bluetooth:", 0) == 0 ||
+        view.bluetooth.status == "Done" || view.bluetooth.status.rfind("Connected to ", 0) == 0 ||
+        view.bluetooth.status.rfind("Paired with ", 0) == 0 ? view.bluetooth.status :
+        !view.notice.empty() ? view.notice : view.bluetooth.status;
+    const std::string message = "Status: " + status;
+    const int status_top = top + visible + 3;
+    for (int line = 0; line < 3 && status_top + line < rows - 1; ++line) {
+      const size_t offset = static_cast<size_t>(line) * static_cast<size_t>(width);
+      if (offset >= message.size()) break;
+      draw_centered(status_top + line, cols, message.substr(offset, width),
+                    section_style(), width);
+    }
+  }
+
   void draw_text(int row, int col, int width, const std::string &value,
                  attr_t style, bool fill = false) {
     if (width <= 0) return;
@@ -526,75 +752,124 @@ class Renderer {
     attroff(style);
   }
 
+  static std::string bracketed_value(const std::string &value, int width) {
+    if (width < 2) return {};
+    size_t end = std::min(value.size(), static_cast<size_t>(width - 2));
+    if (end < value.size())
+      while (end > 0 && (static_cast<unsigned char>(value[end]) & 0xC0) == 0x80)
+        --end;
+    return "[" + value.substr(0, end) + "]";
+  }
+
   void draw_preview(const ChromeView &view, int pane_rows, int left, int top, int cols) {
     if (pane_rows <= 0 || cols <= 0) return;
-    const int center_row = top + pane_rows / 2 - (pane_rows >= 6 ? 1 : 0);
     if (view.tab == 0) {
       draw_page(view, pane_rows, left, top, cols);
       return;
     }
-    const auto &art = kMenuArt[view.tab - 1];
-    size_t width = 0;
-    for (const char *line : art) width = std::max(width, std::strlen(line));
-    if (pane_rows >= 5 && static_cast<int>(width) <= cols - 2) {
-      const int start = left + (cols - static_cast<int>(width)) / 2;
-      for (int row = 0; row < 5; ++row)
-        draw_text(center_row - 2 + row, start, static_cast<int>(width), art[row], title_style());
+    std::string title;
+    for (const char character : std::string(kTabs[view.tab])) {
+      if (!title.empty()) title += ' ';
+      title += static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
+    }
+    const int width = std::max(25, static_cast<int>(title.size()) + 8);
+    if (pane_rows >= 3 && width <= cols - 2) {
+      const int y = top + (pane_rows - 3) / 2;
+      const int x = left + (cols - width) / 2;
+      draw_widget_glyph(y, x, L'╭', muted_style());
+      draw_widget_glyph(y, x + width - 1, L'╮', muted_style());
+      draw_widget_glyph(y + 2, x, L'╰', muted_style());
+      draw_widget_glyph(y + 2, x + width - 1, L'╯', muted_style());
+      for (int col = 1; col < width - 1; ++col) {
+        draw_widget_glyph(y, x + col, L'─', muted_style());
+        draw_widget_glyph(y + 2, x + col, L'─', muted_style());
+      }
+      draw_widget_glyph(y + 1, x, L'│', muted_style());
+      draw_widget_glyph(y + 1, x + width - 1, L'│', muted_style());
+      draw_text(y + 1, x + (width - static_cast<int>(title.size())) / 2,
+                static_cast<int>(title.size()), title, title_style());
     } else {
       const std::string label = "[" + std::string(kTabs[view.tab]) + "]";
       const int offset = std::max(0, (cols - static_cast<int>(label.size())) / 2);
-      draw_text(center_row, left + offset, cols - offset, label, title_style());
+      draw_text(top + pane_rows / 2, left + offset, cols - offset, label, title_style());
     }
   }
 
   void draw_content_menu(const ChromeView &view, int row, int left, int cols) {
-    int occupied = 0;
+    std::vector<std::string> labels;
+    size_t selected = 0;
     if (view.tab == 1) {
-      int col = 0;
       for (size_t i = 0; i < kMaxSessions; ++i) {
         if (!view.terminals[i]) continue;
-        const std::string label = "[" + std::to_string(i + 1) + "]";
-        if (col + static_cast<int>(label.size()) > cols) break;
-        draw_text(row, left + col, static_cast<int>(label.size()), label,
-                  i == view.active_terminal ? selected_style() : body_style());
-        col += static_cast<int>(label.size()) + 1;
+        if (i == view.active_terminal) selected = labels.size();
+        labels.push_back(std::to_string(i + 1));
       }
-      if (col == 0) draw_text(row, left, cols, "[Terminal]", section_style());
-      occupied = col == 0 ? 10 : col - 1;
     } else if (view.tab == 2) {
-      draw_text(row, left, cols, "[Wave]", selected_style());
-      occupied = 6;
+      labels.emplace_back("Wave");
     } else if (view.tab == 3) {
-      draw_text(row, left, cols, "[Text] [Voice]", body_style());
-      draw_text(row, left + (view.notes_section == 0 ? 0 : 7),
-                view.notes_section == 0 ? 6 : 7,
-                view.notes_section == 0 ? "[Text]" : "[Voice]", selected_style());
-      occupied = 14;
+      labels = {"Text", "Voice"};
+      selected = view.notes_section;
     } else if (view.tab == 4) {
-      int col = 0;
       for (size_t i = 0; i < view.web_tabs.size(); ++i) {
         if (!view.web_tabs[i]) continue;
-        const std::string label = "[" + std::to_string(i + 1) + "]";
-        if (col + static_cast<int>(label.size()) > cols) break;
-        draw_text(row, left + col, static_cast<int>(label.size()), label,
-                  i == view.web_tab ? selected_style() : body_style());
-        col += static_cast<int>(label.size()) + 1;
+        labels.push_back(std::to_string(i + 1));
       }
-      occupied = std::max(0, col - 1);
+      selected = view.web_tab;
     } else if (view.tab == 5) {
-      int col = 0;
-      for (size_t i = 0; i < kSettingsSections.size(); ++i) {
-        const std::string label = "[" + std::string(kSettingsSections[i]) + "]";
-        if (col + static_cast<int>(label.size()) > cols) break;
-        draw_text(row, left + col, static_cast<int>(label.size()), label,
-                  i == view.settings_selection ? selected_style() : body_style());
-        col += static_cast<int>(label.size()) + 1;
-      }
-      occupied = std::max(0, col - 1);
+      labels.assign(kSettingsSections.begin(), kSettingsSections.end());
+      selected = view.settings_selection;
     } else {
-      draw_text(row, left, cols, "[" + std::string(kTabs[view.tab]) + "]", section_style());
+      labels.emplace_back(kTabs[view.tab]);
     }
-    draw_help_hint(row, left, cols, occupied);
+    if (labels.empty()) labels.emplace_back(kTabs[view.tab]);
+    draw_box_menu(labels, selected, row, left, cols);
+    draw_help_hint(row + 3, left, cols, 0);
+  }
+
+  void draw_box_menu(const std::vector<std::string> &labels, size_t selected,
+                     int row, int left, int cols) {
+    if (cols <= 0 || labels.empty()) return;
+    auto box_width = [&](size_t index) {
+      return static_cast<int>(labels[index].size()) + 4;
+    };
+    const int count = static_cast<int>(labels.size());
+    int total = count - 1;
+    for (int i = 0; i < count; ++i) total += box_width(static_cast<size_t>(i));
+    int first = 0;
+    while (first < static_cast<int>(selected)) {
+      int through_selected = static_cast<int>(selected) - first;
+      for (int i = first; i <= static_cast<int>(selected); ++i)
+        through_selected += box_width(static_cast<size_t>(i));
+      if (through_selected <= cols) break;
+      ++first;
+    }
+    const int start = total <= cols ? left + (cols - total) / 2 : left;
+    int col = start;
+    for (int i = first; i < count; ++i) {
+      const int width = box_width(static_cast<size_t>(i));
+      if (col + width > left + cols) break;
+      const bool active = static_cast<size_t>(i) == selected;
+      const attr_t border = muted_style();
+      if (active) {
+        draw_widget_glyph(row, col, L'╭', border);
+        draw_widget_glyph(row, col + width - 1, L'╮', border);
+        draw_widget_glyph(row + 1, col, L'│', border);
+        draw_widget_glyph(row + 1, col + width - 1, L'│', border);
+        draw_widget_glyph(row + 2, col, L'╰', border);
+        draw_widget_glyph(row + 2, col + width - 1, L'╯', border);
+        for (int x = 1; x < width - 1; ++x)
+          draw_widget_glyph(row, col + x, L'─', border);
+        for (int x = 1; x < width - 1; ++x)
+          draw_widget_glyph(row + 2, col + x, L'─', border);
+      } else {
+        for (int x = 1; x < width - 1; ++x)
+          draw_widget_glyph(row + 2, col + x, L'─', border);
+      }
+      draw_text(row + 1, col + 1, width - 2,
+                " " + labels[static_cast<size_t>(i)] + " ",
+                active ? menu_selected_text_style() : body_style());
+      col += width + 1;
+    }
   }
 
   void draw_help_hint(int row, int left, int cols, int occupied) {
@@ -637,7 +912,7 @@ class Renderer {
     }
     if (tab == 1) {
       if (pane_rows > 3) draw_text(top + 3, left, cols,
-          "No terminal. Alt+Tab creates one.", muted_style());
+          "No terminal is running.", muted_style());
     } else if (pane_rows > 3) {
       draw_text(top + 3, left, cols, "PLANNED", section_style());
     }
@@ -646,9 +921,12 @@ class Renderer {
   void draw_widget_glyph(int row, int col, wchar_t glyph, attr_t style) {
     cchar_t cell{};
     const wchar_t text[] = {glyph, L'\0'};
-    if (MB_CUR_MAX > 1 && setcchar(&cell, text, style, 0, nullptr) == OK &&
+    if (unicode_glyphs_ && MB_CUR_MAX > 1 &&
+        setcchar(&cell, text, style & ~A_COLOR, PAIR_NUMBER(style), nullptr) == OK &&
         mvadd_wch(row, col, &cell) == OK) return;
-    const char fallback = glyph == L'─' ? '-' : glyph == L'│' ? '|' :
+    const char fallback = glyph == L'▌' || glyph == L'▸' ? '>' : glyph == L'▾' ? 'v' :
+                          glyph == L'─' ? '-' :
+                          glyph == L'│' ? '|' :
                           glyph == L'█' ? '#' : glyph == L'░' ? '.' : '+';
     attron(style);
     (void)mvaddch(row, col, fallback);
@@ -735,44 +1013,65 @@ class Renderer {
     const std::string weather_value = view.weather.temperature.empty() ?
         view.weather.status : view.weather.temperature;
     const std::string weather_detail = !view.weather.condition.empty() ? view.weather.condition :
-        view.weather.location.empty() ? "Settings / Weather" :
+        view.weather.location.empty() ? "Settings / General / Weather" :
         view.weather.loading ? "Fetching current weather" :
         view.weather.status == "City not found" ? "Check city name" : "Check network";
 
     if (cols >= 44 && pane_rows >= 11) {
       const int width = std::min(cols - 4, 72);
       const int col = left + (cols - width) / 2;
-      const int row = top + (pane_rows - 11) / 2;
+      const int enabled = static_cast<int>(std::count(view.dashboard_widgets.begin(),
+                                                       view.dashboard_widgets.end(), true));
+      const int content_height = enabled > 2 ? 11 : 5;
+      const int row = top + (pane_rows - content_height) / 2;
       const int left_width = (width - 2) / 2;
       const int right_col = col + left_width + 2;
       const int right_width = width - left_width - 2;
-      draw_widget(row, col, left_width, "CLOCK", clock, date);
-      draw_widget(row, right_col, right_width, "WEATHER", weather_value, weather_detail);
-      if (!view.weather.location.empty())
-        draw_text(row + 1, right_col + 3, right_width - 6,
-                  view.weather.location, section_style());
-      draw_widget(row + 6, col, left_width, "NETWORK", network_value, network_detail);
-      draw_text(row + 7, col + 3, left_width - 6,
-                network_value == "Offline" ? "Disconnected" : "Connected", section_style());
-      draw_widget(row + 6, right_col, right_width, "BATTERY", battery_value, battery_detail);
-      draw_battery_meter(row + 6, col + left_width + 2, width - left_width - 2,
-                         battery_value);
+      const std::array<std::string, 4> values = {clock, weather_value, network_value, battery_value};
+      const std::array<std::string, 4> details = {date, weather_detail, network_detail, battery_detail};
+      const std::array<const char *, 4> names = {"CLOCK", "WEATHER", "NETWORK", "BATTERY"};
+      int shown = 0;
+      for (size_t i = 0; i < view.dashboard_widgets.size(); ++i) {
+        if (!view.dashboard_widgets[i]) continue;
+        const bool wide_single = enabled == 1;
+        const int item_width = wide_single ? width : ((shown % 2 == 0) ? left_width : right_width);
+        const int item_col = wide_single ? col : ((shown % 2 == 0) ? col : right_col);
+        const int item_row = row + (enabled > 2 ? (shown / 2) * 6 : 0);
+        draw_widget(item_row, item_col, item_width, names[i], values[i], details[i]);
+        if (i == 1 && !view.weather.location.empty())
+          draw_text(item_row + 1, item_col + 3, item_width - 6, view.weather.location, section_style());
+        if (i == 2)
+          draw_text(item_row + 1, item_col + 3, item_width - 6,
+                    network_value == "Offline" ? "Disconnected" : "Connected", section_style());
+        if (i == 3) draw_battery_meter(item_row, item_col, item_width, battery_value);
+        ++shown;
+      }
     } else if (cols >= 16 && pane_rows >= 23) {
-      const int row = top + (pane_rows - 23) / 2;
-      draw_widget(row, left, cols, "CLOCK", clock, date);
-      draw_widget(row + 6, left, cols, "WEATHER", weather_value, weather_detail);
-      if (!view.weather.location.empty())
-        draw_text(row + 7, left + 3, cols - 6, view.weather.location, section_style());
-      draw_widget(row + 12, left, cols, "NETWORK", network_value, network_detail);
-      draw_text(row + 13, left + 3, cols - 6,
-                network_value == "Offline" ? "Disconnected" : "Connected", section_style());
-      draw_widget(row + 18, left, cols, "BATTERY", battery_value, battery_detail);
-      draw_battery_meter(row + 18, left, cols, battery_value);
+      const int enabled = static_cast<int>(std::count(view.dashboard_widgets.begin(),
+                                                       view.dashboard_widgets.end(), true));
+      const int row = top + (pane_rows - std::max(1, enabled) * 6 + 1) / 2;
+      const std::array<std::string, 4> values = {clock, weather_value, network_value, battery_value};
+      const std::array<std::string, 4> details = {date, weather_detail, network_detail, battery_detail};
+      const std::array<const char *, 4> names = {"CLOCK", "WEATHER", "NETWORK", "BATTERY"};
+      int shown = 0;
+      for (size_t i = 0; i < view.dashboard_widgets.size(); ++i) {
+        if (!view.dashboard_widgets[i]) continue;
+        const int item_row = row + shown * 6;
+        draw_widget(item_row, left, cols, names[i], values[i], details[i]);
+        if (i == 1 && !view.weather.location.empty())
+          draw_text(item_row + 1, left + 3, cols - 6, view.weather.location, section_style());
+        if (i == 2)
+          draw_text(item_row + 1, left + 3, cols - 6,
+                    network_value == "Offline" ? "Disconnected" : "Connected", section_style());
+        if (i == 3) draw_battery_meter(item_row, left, cols, battery_value);
+        ++shown;
+      }
     } else {
-      if (pane_rows > 0) draw_field(top, left, cols, "Clock", clock, body_style());
-      if (pane_rows > 1) draw_field(top + 1, left, cols, "Weather", weather_value, body_style());
-      if (pane_rows > 2) draw_field(top + 2, left, cols, "Network", network_value, body_style());
-      if (pane_rows > 3) draw_field(top + 3, left, cols, "Battery", battery_value, body_style());
+      const std::array<std::string, 4> values = {clock, weather_value, network_value, battery_value};
+      const std::array<const char *, 4> names = {"Clock", "Weather", "Network", "Battery"};
+      int row = top;
+      for (size_t i = 0; i < view.dashboard_widgets.size() && row < top + pane_rows; ++i)
+        if (view.dashboard_widgets[i]) draw_field(row++, left, cols, names[i], values[i], body_style());
     }
   }
 
@@ -795,7 +1094,7 @@ class Renderer {
     if (view.note_editing) return;
     if (pane_rows < 1) return;
     if (view.notes.empty())
-      draw_text(top, left, cols, "No notes yet. Press n to create one.", muted_style());
+      draw_text(top, left, cols, "No notes yet.", muted_style());
     const int available = std::max(0, pane_rows);
     const size_t start = available > 0 && view.note_selection >= static_cast<size_t>(available) ?
         view.note_selection - static_cast<size_t>(available) + 1 : 0;
@@ -808,67 +1107,162 @@ class Renderer {
 
   void draw_web(const ChromeView &view, int pane_rows, int left, int top, int cols) {
     if (view.web_browsing || pane_rows < 1) return;
-    draw_text(top, left, cols, "[w] Wikipedia search", body_style());
-    if (pane_rows > 1) draw_text(top + 1, left, cols, "[b] Browse URL", body_style());
-    if (pane_rows > 2) draw_text(top + 2, left, cols, "[d] DuckDuckGo search", body_style());
-    if (pane_rows > 3) draw_text(top + 3, left, cols, "[g] Google search", body_style());
+    draw_text(top, left, cols, "Search the web", body_style());
   }
 
   void draw_settings(const ChromeView &view, int pane_rows, int left, int top, int cols) {
     if (pane_rows <= 0) return;
-    if (view.settings_selection == 1) {
-      draw_network(view, pane_rows, left, top, cols);
-      return;
-    }
+    const int bottom = top + pane_rows;
+    const int inner_left = left + 2;
+    const int inner_cols = std::max(0, cols - 2);
+    auto section = [&](int row, const char *name, bool expanded, bool focused) {
+      if (row >= bottom) return;
+      const attr_t style = focused ? selected_style() : section_style();
+      draw_widget_glyph(row, left, expanded ? L'▾' : L'▸', style);
+      draw_text(row, left + 1, cols - 1, " [" + std::string(name) + "]", style);
+    };
+    auto option = [&](int row, const std::string &label, bool focused) {
+      if (row >= bottom) return;
+      draw_text(row, inner_left, inner_cols, label,
+                focused ? selected_style() : body_style());
+    };
     if (view.settings_selection == 2) {
-      draw_audio(view, pane_rows, left, top, cols);
+      int row = top;
+      constexpr std::array<const char *, 5> names = {
+          "Network", "Audio", "Bluetooth", "Storage", "Peripherals"};
+      for (size_t index = 0; index < names.size(); ++index) {
+        const int content_bottom = bottom - 2 * static_cast<int>(names.size() - index - 1);
+        section(row++, names[index], view.device_expanded[index],
+                view.settings_item == index && !view.device_content_focused);
+        if (view.device_expanded[index] && index == 0) {
+          const std::string wifi = view.wifi.device.empty() ? "Unavailable" :
+              !view.wifi.enabled ? "Off" :
+              view.wifi.connected_ssid.empty() ? "Disconnected" : view.wifi.connected_ssid;
+          option(row++, "WiFi: " + bracketed_value(wifi, inner_cols - 6),
+                 view.settings_item == index && view.device_content_focused);
+          const auto connected_lan = std::find_if(view.wifi.wired.begin(), view.wifi.wired.end(),
+              [](const LanConnection &lan) { return lan.connected; });
+          option(row++, "LAN: " + std::string(connected_lan == view.wifi.wired.end() ?
+              "Disconnected" : "Connected"), false);
+        } else if (view.device_expanded[index] && index == 1) {
+          draw_audio(view, std::max(0, std::min(4, bottom - row)), inner_left, row, inner_cols);
+          row += 4;
+        } else if (view.device_expanded[index] && index == 2) {
+          if (row < content_bottom)
+            option(row++, "Power: " + std::string(view.bluetooth.available ?
+                (view.bluetooth.powered ? "On" : "Off") : "Unavailable"), false);
+          if (row < content_bottom) option(row++, "Status: " + view.bluetooth.status, false);
+          const size_t connected = static_cast<size_t>(std::count_if(
+              view.bluetooth.devices.begin(), view.bluetooth.devices.end(),
+              [](const BluetoothDevice &device) { return device.connected; }));
+          if (row < content_bottom) option(row++, "Connected devices:", false);
+          if (connected == 0 && row < content_bottom - 1) option(row++, "  None", false);
+          const int slots = std::max(0, content_bottom - row - 1);
+          const bool truncated = connected > static_cast<size_t>(slots);
+          const int visible = std::max(0, slots - (truncated ? 1 : 0));
+          int shown = 0;
+          for (const auto &device : view.bluetooth.devices) {
+            if (!device.connected || shown >= visible) continue;
+            option(row++, "  " + device.name, false);
+            ++shown;
+          }
+          if (truncated && row < content_bottom - 1)
+            option(row++, "  +" + std::to_string(connected - shown) + " more", false);
+          if (row < content_bottom)
+            option(row++, "[Add device]",
+                   view.settings_item == index && view.device_content_focused);
+        } else if (view.device_expanded[index] && index == 3) {
+          const int visible = std::max(0, content_bottom - row);
+          const size_t start = visible > 0 && view.storage_selection >= static_cast<size_t>(visible)
+              ? view.storage_selection - static_cast<size_t>(visible) + 1 : 0;
+          if (view.hardware.drives.empty() && visible > 0)
+            option(row++, "No drives found", false);
+          for (int i = 0; i < visible && start + static_cast<size_t>(i) < view.hardware.drives.size(); ++i) {
+            const size_t selected = start + static_cast<size_t>(i);
+            const auto &drive = view.hardware.drives[selected];
+            const std::string label = drive.name + ": " +
+                (drive.mountpoint.empty() ? storage_size(drive.size_bytes) + " [not mounted]" :
+                    storage_size(drive.free_bytes) + "/" +
+                    storage_size(drive.size_bytes) + " [" + drive.mountpoint + "]");
+            option(row++, label, view.settings_item == index &&
+                view.device_content_focused && view.storage_selection == selected);
+          }
+        } else if (view.device_expanded[index] && index == 4) {
+          const int visible = std::max(0, content_bottom - row);
+          const size_t start = visible > 0 && view.peripheral_selection >= static_cast<size_t>(visible)
+              ? view.peripheral_selection - static_cast<size_t>(visible) + 1 : 0;
+          if (view.hardware.usb_devices.empty() && visible > 0)
+            option(row++, "No USB devices found", false);
+          for (int i = 0; i < visible && start + static_cast<size_t>(i) < view.hardware.usb_devices.size(); ++i) {
+            const size_t selected = start + static_cast<size_t>(i);
+            option(row++, view.hardware.usb_devices[selected].name,
+                   view.settings_item == index && view.device_content_focused &&
+                   view.peripheral_selection == selected);
+          }
+        }
+        ++row;
+      }
       return;
     }
     if (view.settings_selection == 3) {
-      draw_bluetooth(view, pane_rows, left, top, cols);
-      return;
-    }
-    if (view.settings_selection == 4) {
-      if (pane_rows > 0) draw_text(top, left, cols, "Cookies", section_style());
+      draw_text(top, left, cols, "[Web]", section_style());
       for (size_t i = 0; i < kCookiePolicyNames.size(); ++i) {
-        const int row = top + 2 + static_cast<int>(i);
+        const int row = top + 1 + static_cast<int>(i);
         if (row >= top + pane_rows) break;
-        const std::string label = "[" + std::string(kCookiePolicyNames[i]) + "]" +
-            (view.cookie_policy == static_cast<CookiePolicy>(i) ? " *" : "");
-        draw_text(row, left, cols, label,
-                  view.cookie_selection == i ? selected_style() : body_style());
+        const std::string label = std::string(view.cookie_policy == static_cast<CookiePolicy>(i) ?
+            "[x] " : "[ ] ") + kCookiePolicyNames[i];
+        option(row, label, view.cookie_selection == i);
       }
-      const int links_row = top + 2 + static_cast<int>(kCookiePolicyNames.size());
+      const int links_row = top + 1 + static_cast<int>(kCookiePolicyNames.size());
       if (links_row < top + pane_rows) {
-        const std::string label = "Page header links: " +
-            std::string(view.show_web_header_links ? "On" : "Off");
-        draw_text(links_row, left, cols, label,
-                  view.cookie_selection == kCookiePolicyNames.size() ? selected_style() : body_style());
+        const std::string label = std::string(view.show_web_header_links ? "[x] " : "[ ] ") +
+            "Page header links";
+        option(links_row, label, view.cookie_selection == kCookiePolicyNames.size());
       }
       if (links_row + 2 < top + pane_rows)
-        draw_text(links_row + 2, left, cols,
-                  "ELinks cannot identify necessary cookies.", muted_style());
-      if (links_row + 3 < top + pane_rows)
-        draw_text(links_row + 3, left, cols,
+        draw_text(links_row + 2, inner_left, inner_cols,
                   "Block all may break some websites.", muted_style());
       return;
     }
-    if (view.settings_selection == 5) {
-      draw_field(top, left, cols, "City",
-                 view.weather.location.empty() ? "Not set" : view.weather.location, body_style());
-      if (pane_rows > 2)
-        draw_field(top + 2, left, cols, "Status", view.weather.status, muted_style());
-      if (pane_rows > 4)
-        draw_text(top + 4, left, cols, "Weather data: Open-Meteo", muted_style());
+    if (view.settings_selection == 0) {
+      int row = top;
+      section(row++, "Navigation", view.general_expanded[0], view.settings_item == 0);
+      if (view.general_expanded[0])
+        option(row++, std::string(view.vi_keys ? "[x] " : "[ ] ") +
+                    "Vi motion (arrows always work)", view.settings_item == 1);
+      ++row;
+      section(row++, "Weather", view.general_expanded[1], view.settings_item == 2);
+      if (view.general_expanded[1]) {
+        option(row++, "City: " + bracketed_value(
+                    view.weather.location.empty() ? std::string("Not set") :
+                    view.weather.location, inner_cols - 6), view.settings_item == 3);
+        if (row < bottom) draw_text(row++, inner_left, inner_cols,
+                                   "Status: " + view.weather.status, muted_style());
+      }
       return;
     }
-    for (size_t i = 0; i < kThemeNames.size(); ++i) {
-      const int row = top + static_cast<int>(i);
-      if (row >= top + pane_rows) break;
-      const std::string label = "[" + std::string(kThemeNames[i]) + "]" +
-                                (view.theme == static_cast<Theme>(i) ? " *" : "");
-      draw_text(row, left, cols, label,
-                view.theme_selection == i ? selected_style() : body_style());
+    if (view.settings_selection == 1) {
+      int row = top;
+      section(row++, "Theme", view.interface_expanded[0], view.settings_item == 0);
+      if (view.interface_expanded[0])
+        for (size_t i = 0; i < kThemeNames.size(); ++i)
+          option(row++, std::string(view.theme == static_cast<Theme>(i) ? "[x] " : "[ ] ") +
+                    kThemeNames[i], view.settings_item == i + 1);
+      ++row;
+      section(row++, "Dashboard", view.interface_expanded[1], view.settings_item == 4);
+      constexpr std::array<const char *, 4> names = {"Clock", "Weather", "Network", "Battery"};
+      if (view.interface_expanded[1])
+        for (size_t i = 0; i < names.size(); ++i)
+          option(row++, std::string(view.dashboard_widgets[i] ? "[x] " : "[ ] ") + names[i],
+                 view.settings_item == i + 5);
+      ++row;
+      section(row++, "Display", view.interface_expanded[2], view.settings_item == 9);
+      if (view.interface_expanded[2]) {
+        option(row++, std::string(view.unicode_glyphs ? "[x] " : "[ ] ") + "Unicode glyphs",
+               view.settings_item == 10);
+        option(row++, std::string(view.unicode_glyphs ? "[ ] " : "[x] ") + "ASCII glyphs",
+               view.settings_item == 11);
+      }
     }
   }
 
@@ -892,8 +1286,8 @@ class Renderer {
 
   void draw_audio(const ChromeView &view, int pane_rows, int left, int top, int cols) {
     const int bottom = top + pane_rows;
-    if (top < bottom) draw_field(top, left, cols, "Status", view.audio.status,
-                                  view.audio.available ? body_style() : muted_style());
+    if (top < bottom) draw_text(top, left, cols, "Status: " + view.audio.status,
+                                view.audio.available ? body_style() : muted_style());
     if (!view.audio.available) return;
 
     for (size_t index = 0; index < 2; ++index) {
@@ -906,9 +1300,9 @@ class Renderer {
                            index == view.audio_selection;
       const attr_t style = focused ? selected_style() : body_style();
       if (focused) draw_text(row, left, cols, "", style, true);
-      const bool audio_icon = ghostty_ && cols >= 3;
+      const bool audio_icon = ghostty_ && unicode_glyphs_ && cols >= 3;
       const int icon_width = audio_icon ? 3 : 0;
-      const std::string label = index == 0 ? "[Output] " : "[Input] ";
+      const std::string label = index == 0 ? "Output: " : "Input: ";
       std::string suffix;
       if (selected != devices.end()) {
         const unsigned volume = std::min(selected->volume, 100u);
@@ -923,9 +1317,10 @@ class Renderer {
                   percentage + (selected->muted ? " muted" : "      ");
       }
       const int name_width = std::max(0, cols - icon_width - static_cast<int>(suffix.size()) - 1);
+      const std::string name = selected == devices.end() ?
+          (devices.empty() ? "No device" : "Not selected") : selected->description;
       draw_text(row, left + icon_width, name_width, label +
-          (selected == devices.end() ? (devices.empty() ? "No device" : "Not selected") :
-                                      selected->description), style);
+          bracketed_value(name, name_width - static_cast<int>(label.size())), style);
       if (audio_icon) {
         // Nerd Fonts' Font Awesome speaker/microphone glyphs occupy one cell.
         const unsigned volume = selected == devices.end() ? 0u : selected->volume;
@@ -956,7 +1351,7 @@ class Renderer {
     if (!view.bluetooth.available || list_top >= list_bottom) return;
     if (view.bluetooth.devices.empty()) {
       draw_text(list_top, left, cols,
-          view.bluetooth.powered ? "No devices; press r to scan" : "Bluetooth is off; press w",
+          view.bluetooth.powered ? "No devices found" : "Bluetooth is off",
           muted_style());
       return;
     }
@@ -967,7 +1362,7 @@ class Renderer {
     for (int i = 0; i < visible && start + static_cast<size_t>(i) < view.bluetooth.devices.size(); ++i) {
       const auto &device = view.bluetooth.devices[start + static_cast<size_t>(i)];
       const int row = list_top + i;
-      const bool icon = ghostty_ && cols >= 3;
+      const bool icon = ghostty_ && unicode_glyphs_ && cols >= 3;
       const attr_t style = !view.menu_focused && view.bluetooth_page &&
           start + static_cast<size_t>(i) == selected ? selected_style() : body_style();
       const char *state = device.connected ? "connected" : device.paired ? "paired" : "found";
@@ -1015,8 +1410,8 @@ class Renderer {
     const size_t total = wired_count + view.wifi.networks.size();
     if (total == 0) {
       if (list_top < list_bottom) draw_text(list_top, left, cols,
-          !view.wifi.enabled && !view.wifi.device.empty() ? "WiFi is off; press w to enable" :
-          "No wired devices or WiFi networks; press r to refresh",
+          !view.wifi.enabled && !view.wifi.device.empty() ? "WiFi is off" :
+          "No wired devices or WiFi networks found",
           muted_style());
       return;
     }
@@ -1040,7 +1435,7 @@ class Renderer {
         continue;
       }
       const auto &network = view.wifi.networks[index - wired_count];
-      const bool lock_icon = ghostty_ && network.visible &&
+      const bool lock_icon = ghostty_ && unicode_glyphs_ && network.visible &&
                              network.security == WifiSecurity::Personal && cols >= 3;
       const char *security = network.security == WifiSecurity::Open ? "open" :
                              network.security == WifiSecurity::Personal ? "lock" :
@@ -1116,12 +1511,14 @@ class Renderer {
 
   bool default_colors_ = false;
   bool chrome_colors_ = false;
+  bool unicode_glyphs_ = true;
   UiLayout layout_ = ui_layout();
   bool ghostty_ = false;
   bool host_background_changed_ = false;
   Theme theme_ = Theme::Husky;
   std::map<std::pair<short, short>, short> pairs_;
   short next_pair_ = 5;
+  bool menu_color_ = false;
 };
 
 }  // namespace cyberdeck

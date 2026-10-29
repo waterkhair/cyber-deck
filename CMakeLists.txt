@@ -42,6 +42,7 @@ add_executable(cyber-deck
   src/application.hpp
   src/cookies.hpp
   src/elinks.hpp
+  src/hardware.hpp
   src/dashboard.hpp
   src/input.hpp
   src/menu_art.hpp

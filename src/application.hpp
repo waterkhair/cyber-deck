@@ -16,7 +16,8 @@ class Application {
       : shell_(shell), renderer_(default_colors),
         debug_input_(std::getenv("CYBER_DECK_DEBUG_INPUT") != nullptr) {
     theme_ = load_theme();
-    theme_selection_ = static_cast<size_t>(theme_);
+    settings_item_ = 0;
+    ui_preferences_ = load_ui_preferences();
     cookie_policy_ = load_cookie_policy();
     cookie_selection_ = static_cast<size_t>(cookie_policy_);
     show_web_header_links_ = load_web_header_links();
@@ -247,19 +248,37 @@ class Application {
           else if (wave_add_stage_ != WaveAddStage::None || note_name_prompt_ ||
                    web_query_prompt_ || weather_location_prompt_)
             view.help_dialog = HelpDialog::TextEntry;
+          if (wave_add_stage_ == WaveAddStage::Name) view.text_prompt = TextPrompt::StationName;
+          else if (wave_add_stage_ == WaveAddStage::Url) view.text_prompt = TextPrompt::StationUrl;
+          else if (note_name_prompt_) view.text_prompt = TextPrompt::NoteName;
+          else if (web_query_prompt_) view.text_prompt = TextPrompt::WebQuery;
+          else if (weather_location_prompt_) view.text_prompt = TextPrompt::WeatherCity;
           view.theme = theme_;
           view.settings_selection = settings_selection_;
-          view.theme_selection = theme_selection_;
+          view.settings_item = settings_item_;
+          view.general_expanded = general_expanded_;
+          view.interface_expanded = interface_expanded_;
+          view.device_expanded = device_expanded_;
+          view.device_content_focused = device_content_focused_;
+          view.vi_keys = ui_preferences_.vi_keys;
+          view.unicode_glyphs = ui_preferences_.unicode_glyphs;
+          view.dashboard_widgets = ui_preferences_.dashboard_widgets;
           view.cookie_policy = cookie_policy_;
           view.cookie_selection = cookie_selection_;
           view.show_web_header_links = show_web_header_links_;
           view.wifi_page = wifi_page_;
-          view.audio_page = audio_page_;
+          view.audio_page = audio_page_ && device_content_focused_;
           view.wifi_selection = wifi_selection_;
           view.wifi = wifi_view_;
           view.audio_selection = audio_selection_;
           view.audio_picker_selection = audio_picker_selection_;
           view.audio_picker = audio_picker_;
+          view.wifi_picker = wifi_picker_;
+          view.bluetooth_picker = bluetooth_picker_;
+          view.hardware_details_open = hardware_details_open_;
+          view.storage_selection = storage_selection_;
+          view.peripheral_selection = peripheral_selection_;
+          view.hardware = hardware_view_;
           view.audio = audio_view_;
           view.bluetooth_page = bluetooth_page_;
           view.bluetooth_selection = bluetooth_selection_;
@@ -281,6 +300,7 @@ class Application {
           }
           view.overview = overview_;
           view.weather = weather_view_;
+          view.notice = notice_;
           view.active_terminal = active_index_;
           for (size_t i = 0; i < kMaxSessions; ++i)
             view.terminals[i] = slots_[i] != nullptr;
@@ -417,16 +437,69 @@ class Application {
   }
 
   void select_settings_section(size_t section) {
-    if (bluetooth_page_ && section != 3 && bluetooth_view_.discovering)
+    if (bluetooth_page_ && (section != 2 || settings_item_ != 2) && bluetooth_view_.discovering)
       bluetooth_.set_discovering(false);
     settings_selection_ = section;
-    wifi_page_ = section == 1;
-    audio_page_ = section == 2;
-    bluetooth_page_ = section == 3;
+    settings_item_ = 0;
+    device_content_focused_ = false;
+    hardware_details_open_ = false;
+    wifi_picker_ = bluetooth_picker_ = false;
+    update_settings_page();
+    notice_.clear();
+    ui_dirty_ = true;
+  }
+
+  void select_settings_item(size_t item) {
+    if (bluetooth_page_ && settings_selection_ == 2 && item != 2 && bluetooth_view_.discovering)
+      bluetooth_.set_discovering(false);
+    settings_item_ = item;
+    device_content_focused_ = false;
+    hardware_details_open_ = false;
+    wifi_picker_ = bluetooth_picker_ = false;
+    update_settings_page();
+    notice_.clear();
+    ui_dirty_ = true;
+  }
+
+  bool settings_item_visible(size_t item) const {
+    if (settings_selection_ == 0)
+      return item == 0 || item == 2 || (item == 1 && general_expanded_[0]) ||
+             (item == 3 && general_expanded_[1]);
+    if (settings_selection_ == 1)
+      return item == 0 || item == 4 || item == 9 ||
+             (item >= 1 && item <= 3 && interface_expanded_[0]) ||
+             (item >= 5 && item <= 8 && interface_expanded_[1]) ||
+             (item >= 10 && item <= 11 && interface_expanded_[2]);
+    return false;
+  }
+
+  void move_settings_item(int direction) {
+    const int limit = settings_selection_ == 0 ? 4 : 12;
+    for (int item = static_cast<int>(settings_item_) + direction;
+         item >= 0 && item < limit; item += direction) {
+      if (settings_item_visible(static_cast<size_t>(item))) {
+        settings_item_ = static_cast<size_t>(item);
+        return;
+      }
+    }
+  }
+
+  void update_settings_page() {
+    wifi_page_ = settings_selection_ == 2 && settings_item_ == 0;
+    audio_page_ = settings_selection_ == 2 && settings_item_ == 1;
+    bluetooth_page_ = settings_selection_ == 2 && settings_item_ == 2;
     if (wifi_page_) wifi_.scan();
     if (audio_page_) { audio_view_ = audio_.snapshot(); audio_.refresh(); }
     if (bluetooth_page_) { bluetooth_view_ = bluetooth_.snapshot(); bluetooth_.refresh(); }
-    notice_.clear();
+    if (settings_selection_ == 2 && settings_item_ >= 3) refresh_hardware();
+  }
+
+  void refresh_hardware() {
+    hardware_view_ = read_hardware_snapshot();
+    storage_selection_ = hardware_view_.drives.empty() ? 0 :
+        std::min(storage_selection_, hardware_view_.drives.size() - 1);
+    peripheral_selection_ = hardware_view_.usb_devices.empty() ? 0 :
+        std::min(peripheral_selection_, hardware_view_.usb_devices.size() - 1);
     ui_dirty_ = true;
   }
 
@@ -707,27 +780,33 @@ class Application {
       return {ModalView::Kind::TextEntry,
               notice_.empty() ? (name_stage ? "Add station: name" : "Add station: stream URL") : notice_,
               std::string(name_stage ? "Name: " : "URL: ") + visible + "_",
-              name_stage ? "Enter next   Alt+Esc cancel" : "Enter save   Alt+Esc cancel", false};
+              {}, false};
     }
     if (note_name_prompt_)
       return {ModalView::Kind::TextEntry,
               notice_.empty() ? "New note" : notice_,
-              "Name: " + note_name_ + "_", "Enter create   Alt+Esc cancel", false};
+              "Name: " + note_name_ + "_", {}, false};
     if (web_query_prompt_)
       return {ModalView::Kind::TextEntry,
               notice_.empty() ? web_prompt_title() : notice_,
               std::string(web_prompt_kind_ == WebPromptKind::Browse ? "URL: " : "Query: ") +
                   (web_query_.size() > 42 ? "..." + web_query_.substr(web_query_.size() - 39) : web_query_) + "_",
-              "Enter open   Alt+Esc cancel", false};
+              {}, false};
     if (weather_location_prompt_)
       return {ModalView::Kind::TextEntry,
               notice_.empty() ? "Weather city" : notice_,
               "City: " + (weather_location_.size() > 40 ?
                   "..." + weather_location_.substr(weather_location_.size() - 37) :
                   weather_location_) + "_",
-              "Enter save   Ctrl+U clear   Alt+Esc cancel", false};
+              {}, false};
     if (audio_picker_)
       return {ModalView::Kind::AudioPicker, {}, {}, {}, false};
+    if (wifi_picker_)
+      return {ModalView::Kind::NetworkPicker, {}, {}, {}, false};
+    if (bluetooth_picker_)
+      return {ModalView::Kind::BluetoothPicker, {}, {}, {}, false};
+    if (hardware_details_open_)
+      return {ModalView::Kind::HardwareDetails, {}, {}, {}, false};
     return {};
   }
 
@@ -837,13 +916,29 @@ class Application {
   }
 
   void cyberdeck_back() {
+    if (help_) {
+      help_ = false;
+      ui_dirty_ = true;
+      return;
+    }
+    if (hardware_details_open_) {
+      hardware_details_open_ = false;
+      ui_dirty_ = true;
+      return;
+    }
     const bool bluetooth_prompt_active = bluetooth_view_.prompt != BluetoothPromptKind::None &&
         bluetooth_answered_epoch_ != bluetooth_view_.prompt_epoch;
     if (help_ || confirm_ != Confirm::None || wifi_forget_prompt_ ||
         wifi_password_prompt_ || bluetooth_forget_prompt_ || bluetooth_prompt_active ||
-        audio_picker_ || wave_add_stage_ != WaveAddStage::None ||
+        audio_picker_ || wifi_picker_ || bluetooth_picker_ || hardware_details_open_ ||
+        wave_add_stage_ != WaveAddStage::None ||
         note_name_prompt_ || web_query_prompt_ || weather_location_prompt_) {
       handle_plain({27, false});
+      return;
+    }
+    if (active_tab_ == 5 && settings_selection_ == 2 && device_content_focused_) {
+      device_content_focused_ = false;
+      ui_dirty_ = true;
       return;
     }
     if (!menu_focused_) {
@@ -889,6 +984,7 @@ class Application {
     const bool overlay_open = confirm_ != Confirm::None || wifi_forget_prompt_ ||
                               wifi_password_prompt_ || bluetooth_forget_prompt_ ||
                               bluetooth_prompt_active || help_ || audio_picker_ ||
+                              wifi_picker_ || bluetooth_picker_ || hardware_details_open_ ||
                               wave_add_stage_ != WaveAddStage::None || note_name_prompt_ ||
                               web_query_prompt_ || weather_location_prompt_;
     if (value >= 'A' && value <= 'Z') value = value - 'A' + 'a';
@@ -945,7 +1041,11 @@ class Application {
       return true;
     }
     if (!menu_focused_ && !overlay_open && (value == 'h' || value == 'l')) {
-      move_panel_tab(value == 'h' ? -1 : 1, true);
+      if (active_tab_ == 5) {
+        const int next = static_cast<int>(settings_selection_) + (value == 'h' ? -1 : 1);
+        if (next >= 0 && next < static_cast<int>(kSettingsSections.size()))
+          select_settings_section(static_cast<size_t>(next));
+      } else move_panel_tab(value == 'h' ? -1 : 1, true);
       return true;
     }
     auto open_tab = [this](size_t tab) {
@@ -975,12 +1075,15 @@ class Application {
       confirm_ = Confirm::None;
       help_ = false;
       audio_picker_ = false;
+      wifi_picker_ = bluetooth_picker_ = false;
+      hardware_details_open_ = false;
+      device_content_focused_ = false;
       active_tab_ = tab;
       menu_selection_ = tab;
-      menu_focused_ = false;
+      menu_focused_ = tab == 0;
       if (tab == 5) {
         wifi_page_ = audio_page_ = bluetooth_page_ = false;
-        select_settings_section(settings_selection_);
+        select_settings_section(0);
       }
       if (tab == 3) refresh_notes();
       notice_.clear();
@@ -1038,10 +1141,10 @@ class Application {
 
   bool move_modal_choice(Key key, bool letter_keys) {
     if ((key.special && key.value == KEY_LEFT) ||
-        (letter_keys && !key.special && key.value == 'h')) {
+        (letter_keys && ui_preferences_.vi_keys && !key.special && key.value == 'h')) {
       modal_accept_selected_ = true;
     } else if ((key.special && key.value == KEY_RIGHT) ||
-               (letter_keys && !key.special && key.value == 'l')) {
+               (letter_keys && ui_preferences_.vi_keys && !key.special && key.value == 'l')) {
       modal_accept_selected_ = false;
     } else if (!key.special && key.value == 9) {
       modal_accept_selected_ = !modal_accept_selected_;
@@ -1054,13 +1157,13 @@ class Application {
     const bool enter = (key.special && key.value == KEY_ENTER) ||
         (!key.special && (key.value == 10 || key.value == 13));
     const bool up = (key.special && key.value == KEY_UP) ||
-        (!key.special && key.value == 'k');
+        (ui_preferences_.vi_keys && !key.special && key.value == 'k');
     const bool down = (key.special && key.value == KEY_DOWN) ||
-        (!key.special && key.value == 'j');
+        (ui_preferences_.vi_keys && !key.special && key.value == 'j');
     const bool left = (key.special && key.value == KEY_LEFT) ||
-        (!key.special && key.value == 'h');
+        (ui_preferences_.vi_keys && !key.special && key.value == 'h');
     const bool right = (key.special && key.value == KEY_RIGHT) ||
-        (!key.special && key.value == 'l');
+        (ui_preferences_.vi_keys && !key.special && key.value == 'l');
     const bool output = audio_selection_ == 0;
     auto &devices = output ? audio_view_.outputs : audio_view_.inputs;
     if (!key.special && key.value == 27) {
@@ -1153,9 +1256,9 @@ class Application {
     const bool enter = (key.special && key.value == KEY_ENTER) ||
         (!key.special && (key.value == 10 || key.value == 13));
     const bool up = (key.special && key.value == KEY_UP) ||
-        (!key.special && key.value == 'k');
+        (ui_preferences_.vi_keys && !key.special && key.value == 'k');
     const bool down = (key.special && key.value == KEY_DOWN) ||
-        (!key.special && key.value == 'j');
+        (ui_preferences_.vi_keys && !key.special && key.value == 'j');
     if (!key.special && key.value == 27) {
       if (bluetooth_view_.discovering) bluetooth_.set_discovering(false);
       menu_focused_ = true;
@@ -1307,10 +1410,12 @@ class Application {
         notice_.clear();
       }
       ui_dirty_ = true;
-    } else if ((key.special && key.value == KEY_UP) || (!key.special && key.value == 'k')) {
+    } else if ((key.special && key.value == KEY_UP) ||
+               (ui_preferences_.vi_keys && !key.special && key.value == 'k')) {
       if (wifi_selection_ > 0) --wifi_selection_;
       ui_dirty_ = true;
-    } else if ((key.special && key.value == KEY_DOWN) || (!key.special && key.value == 'j')) {
+    } else if ((key.special && key.value == KEY_DOWN) ||
+               (ui_preferences_.vi_keys && !key.special && key.value == 'j')) {
       if (wifi_selection_ + 1 < total) ++wifi_selection_;
       ui_dirty_ = true;
     } else if (!key.special && key.value == 'r') {
@@ -1585,6 +1690,24 @@ class Application {
       handle_weather_location_key(key);
       return;
     }
+    if (wifi_picker_) {
+      if (!key.special && key.value == 27 &&
+          !wifi_password_prompt_ && !wifi_forget_prompt_) {
+        wifi_picker_ = false;
+        notice_.clear();
+        ui_dirty_ = true;
+      } else handle_wifi_key(key);
+      return;
+    }
+    if (bluetooth_picker_) {
+      if (!key.special && key.value == 27) {
+        bluetooth_picker_ = false;
+        notice_.clear();
+        ui_dirty_ = true;
+      } else handle_bluetooth_key(key);
+      return;
+    }
+    if (hardware_details_open_) return;
     if (menu_focused_) {
       if (key.special && (key.value == KEY_LEFT || key.value == KEY_RIGHT)) {
         (void)handle_alt(key.value == KEY_LEFT ? 'h' : 'l');
@@ -1592,15 +1715,17 @@ class Application {
       }
       if ((key.special && key.value == KEY_ENTER) ||
           (!key.special && (key.value == 10 || key.value == 13))) {
+        if (active_tab_ == 0) return;
         menu_focused_ = false;
         if (active_tab_ == 3) refresh_notes();
-        if (active_tab_ == 5) select_settings_section(settings_selection_);
+        if (active_tab_ == 5) select_settings_section(0);
         notice_.clear();
         ui_dirty_ = true;
       }
       return;
     }
-    const bool panel_overlay = wifi_password_prompt_ || wifi_forget_prompt_ || audio_picker_;
+    const bool panel_overlay = wifi_password_prompt_ || wifi_forget_prompt_ || audio_picker_ ||
+                               wifi_picker_ || bluetooth_picker_ || hardware_details_open_;
     if (!panel_overlay && active_tab_ != 1 &&
         ((!key.special && key.value == 9) ||
          (key.special && key.value == KEY_BTAB))) {
@@ -1617,10 +1742,10 @@ class Application {
       } else if (!key.special && key.value == 27) {
         menu_focused_ = true;
       } else if ((key.special && key.value == KEY_UP) ||
-                 (!key.special && key.value == 'k')) {
+                 (ui_preferences_.vi_keys && !key.special && key.value == 'k')) {
         if (wave_selection_ > 0) --wave_selection_;
       } else if ((key.special && key.value == KEY_DOWN) ||
-                 (!key.special && key.value == 'j')) {
+                 (ui_preferences_.vi_keys && !key.special && key.value == 'j')) {
         if (wave_selection_ + 1 < wave_.stations().size()) ++wave_selection_;
       } else if (enter) {
         wave_.toggle(wave_selection_);
@@ -1648,10 +1773,10 @@ class Application {
         note_name_.clear();
         notice_.clear();
       } else if ((key.special && key.value == KEY_UP) ||
-                 (!key.special && key.value == 'k')) {
+                 (ui_preferences_.vi_keys && !key.special && key.value == 'k')) {
         if (note_selection_ > 0) --note_selection_;
       } else if ((key.special && key.value == KEY_DOWN) ||
-                 (!key.special && key.value == 'j')) {
+                 (ui_preferences_.vi_keys && !key.special && key.value == 'j')) {
         if (note_selection_ + 1 < notes_.size()) ++note_selection_;
       } else if (enter && note_selection_ < notes_.size()) {
         open_note(notes_[note_selection_]);
@@ -1676,18 +1801,123 @@ class Application {
       return;
     }
     if (active_tab_ == 5) {
-      if (wifi_page_) { handle_wifi_key(key); return; }
-      if (audio_page_) { handle_audio_key(key); return; }
-      if (bluetooth_page_) { handle_bluetooth_key(key); return; }
       const bool enter = (key.special && key.value == KEY_ENTER) ||
           (!key.special && (key.value == 10 || key.value == 13));
-      if (settings_selection_ == 4) {
+      if (audio_picker_) { handle_audio_key(key); return; }
+      if (!key.special && key.value == 'h') {
+        bool collapsed = false;
+        if (settings_selection_ == 0) {
+          const size_t section = settings_item_ < 2 ? 0 : 1;
+          if (general_expanded_[section]) {
+            general_expanded_[section] = false;
+            settings_item_ = section == 0 ? 0 : 2;
+            collapsed = true;
+          }
+        } else if (settings_selection_ == 1) {
+          const size_t section = settings_item_ < 4 ? 0 : settings_item_ < 9 ? 1 : 2;
+          if (interface_expanded_[section]) {
+            interface_expanded_[section] = false;
+            settings_item_ = section == 0 ? 0 : section == 1 ? 4 : 9;
+            collapsed = true;
+          }
+        } else if (settings_selection_ == 2 && device_expanded_[settings_item_] &&
+                   !(settings_item_ == 1 && device_content_focused_)) {
+          device_expanded_[settings_item_] = false;
+          device_content_focused_ = false;
+          collapsed = true;
+        }
+        if (collapsed) {
+          ui_dirty_ = true;
+          return;
+        }
+      }
+      const bool up = (key.special && key.value == KEY_UP) ||
+          (ui_preferences_.vi_keys && !key.special && key.value == 'k');
+      const bool down = (key.special && key.value == KEY_DOWN) ||
+          (ui_preferences_.vi_keys && !key.special && key.value == 'j');
+      if (settings_selection_ == 2) {
+        if (!key.special && key.value >= '1' && key.value <= '5') {
+          select_settings_item(static_cast<size_t>(key.value - '1'));
+        } else if (!device_content_focused_) {
+          if (up && settings_item_ > 0) {
+            const size_t previous = settings_item_ - 1;
+            select_settings_item(previous);
+            if (device_expanded_[previous] &&
+                (previous < 3 || (previous == 3 && !hardware_view_.drives.empty()))) {
+              device_content_focused_ = true;
+              if (previous == 1) audio_selection_ = 1;
+              if (previous == 3) storage_selection_ = hardware_view_.drives.size() - 1;
+            }
+          }
+          else if (down && device_expanded_[settings_item_] &&
+                   (settings_item_ < 3 ||
+                    (settings_item_ == 3 && !hardware_view_.drives.empty()) ||
+                    (settings_item_ == 4 && !hardware_view_.usb_devices.empty())))
+            device_content_focused_ = true;
+          else if (down && settings_item_ < 4) select_settings_item(settings_item_ + 1);
+          else if (enter) {
+            const bool expand = !device_expanded_[settings_item_];
+            device_expanded_.fill(false);
+            device_expanded_[settings_item_] = expand;
+            if (!expand) device_content_focused_ = false;
+          } else if (!key.special && key.value == 'r') {
+            if (settings_item_ == 0) wifi_.scan();
+            else if (settings_item_ == 1) audio_.refresh();
+            else if (settings_item_ == 2) handle_bluetooth_key(key);
+            else refresh_hardware();
+          } else if (!key.special && key.value == 'w') {
+            if (settings_item_ == 0) wifi_.set_enabled(!wifi_view_.enabled);
+            else if (settings_item_ == 2) handle_bluetooth_key(key);
+          }
+        } else if (!key.special && key.value == 27) {
+          device_content_focused_ = false;
+        } else if (settings_item_ == 0) {
+          if (up) device_content_focused_ = false;
+          else if (down) select_settings_item(1);
+          else if (enter) { wifi_picker_ = true; notice_.clear(); }
+          else if (!key.special && (key.value == 'r' || key.value == 'w')) handle_wifi_key(key);
+        } else if (settings_item_ == 1) {
+          if (up && audio_selection_ == 0) device_content_focused_ = false;
+          else if (down && audio_selection_ == 1) select_settings_item(2);
+          else handle_audio_key(key);
+        } else if (settings_item_ == 2) {
+          if (up) device_content_focused_ = false;
+          else if (down) select_settings_item(3);
+          else if (enter) {
+            bluetooth_picker_ = true;
+            if (bluetooth_view_.available && bluetooth_view_.powered &&
+                !bluetooth_view_.discovering && !bluetooth_view_.busy)
+              bluetooth_.set_discovering(true);
+            notice_.clear();
+          } else if (!key.special && (key.value == 'r' || key.value == 'w'))
+            handle_bluetooth_key(key);
+        } else if (settings_item_ == 3) {
+          if (up && storage_selection_ == 0) device_content_focused_ = false;
+          else if (up) --storage_selection_;
+          else if (down && storage_selection_ + 1 < hardware_view_.drives.size())
+            ++storage_selection_;
+          else if (down) select_settings_item(4);
+          else if (enter && !hardware_view_.drives.empty()) hardware_details_open_ = true;
+          else if (!key.special && key.value == 'r') refresh_hardware();
+        } else if (settings_item_ == 4) {
+          if (up && peripheral_selection_ == 0) device_content_focused_ = false;
+          else if (up) --peripheral_selection_;
+          else if (down && peripheral_selection_ + 1 < hardware_view_.usb_devices.size())
+            ++peripheral_selection_;
+          else if (enter && !hardware_view_.usb_devices.empty())
+            hardware_details_open_ = true;
+          else if (!key.special && key.value == 'r') refresh_hardware();
+        }
+        ui_dirty_ = true;
+        return;
+      }
+      if (settings_selection_ == 3) {
         const size_t web_settings_count = kCookiePolicyNames.size() + 1;
         if ((key.special && key.value == KEY_UP) ||
-            (!key.special && key.value == 'k')) {
+            (ui_preferences_.vi_keys && !key.special && key.value == 'k')) {
           if (cookie_selection_ > 0) --cookie_selection_;
         } else if ((key.special && key.value == KEY_DOWN) ||
-                   (!key.special && key.value == 'j')) {
+                   (ui_preferences_.vi_keys && !key.special && key.value == 'j')) {
           if (cookie_selection_ + 1 < web_settings_count) ++cookie_selection_;
         } else if (enter) {
           if (cookie_selection_ == kCookiePolicyNames.size()) {
@@ -1704,36 +1934,52 @@ class Application {
         ui_dirty_ = true;
         return;
       }
-      if (settings_selection_ == 5) {
-        if (enter) {
+      if (settings_selection_ == 0) {
+        if (up) move_settings_item(-1);
+        else if (down) move_settings_item(1);
+        else if (enter && settings_item_ == 0) {
+          const bool expand = !general_expanded_[0];
+          general_expanded_.fill(false);
+          general_expanded_[0] = expand;
+        } else if (enter && settings_item_ == 2) {
+          const bool expand = !general_expanded_[1];
+          general_expanded_.fill(false);
+          general_expanded_[1] = expand;
+        } else if (enter && settings_item_ == 1) {
+          ui_preferences_.vi_keys = !ui_preferences_.vi_keys;
+          notice_ = save_ui_preferences(ui_preferences_) ? "" : "Changed; could not save preference";
+        } else if (enter && settings_item_ == 3) {
           weather_location_prompt_ = true;
           weather_location_ = weather_view_.location;
           notice_.clear();
-        } else if (!key.special && key.value == 'r') {
-          weather_.refresh();
-          notice_.clear();
+        } else if (!key.special && key.value == 'r') weather_.refresh();
+      } else if (settings_selection_ == 1) {
+        if (up) move_settings_item(-1);
+        else if (down) move_settings_item(1);
+        else if (enter && (settings_item_ == 0 || settings_item_ == 4 || settings_item_ == 9)) {
+          const size_t section = settings_item_ == 0 ? 0 : settings_item_ == 4 ? 1 : 2;
+          const bool expand = !interface_expanded_[section];
+          interface_expanded_.fill(false);
+          interface_expanded_[section] = expand;
+        } else if (enter && settings_item_ >= 1 && settings_item_ <= 3) {
+          theme_ = static_cast<Theme>(settings_item_ - 1);
+          renderer_.set_theme(theme_);
+          notice_ = save_theme(theme_) ? "" : "Theme changed; could not save preference";
+        } else if (enter && settings_item_ >= 5 && settings_item_ <= 8) {
+          const size_t widget = settings_item_ - 5;
+          ui_preferences_.dashboard_widgets[widget] = !ui_preferences_.dashboard_widgets[widget];
+          notice_ = save_ui_preferences(ui_preferences_) ? "" : "Changed; could not save preference";
+        } else if (enter && (settings_item_ == 10 || settings_item_ == 11)) {
+          ui_preferences_.unicode_glyphs = settings_item_ == 10;
+          notice_ = save_ui_preferences(ui_preferences_) ? "" : "Changed; could not save preference";
         }
-        ui_dirty_ = true;
-        return;
-      }
-      if ((key.special && key.value == KEY_UP) ||
-                 (!key.special && key.value == 'k')) {
-        if (theme_selection_ > 0) --theme_selection_;
-        ui_dirty_ = true;
-      } else if ((key.special && key.value == KEY_DOWN) ||
-                 (!key.special && key.value == 'j')) {
-        if (theme_selection_ + 1 < kThemeNames.size()) ++theme_selection_;
-        ui_dirty_ = true;
-      } else if (enter) {
-        theme_ = static_cast<Theme>(theme_selection_);
-        renderer_.set_theme(theme_);
-        notice_ = save_theme(theme_) ? "" : "Theme changed; could not save preference";
-        ui_dirty_ = true;
       } else if (!key.special && key.value == 27) {
         menu_focused_ = true;
         notice_.clear();
         ui_dirty_ = true;
+        return;
       }
+      ui_dirty_ = true;
       return;
     }
     if (active_tab_ != 1) {
@@ -1817,13 +2063,19 @@ class Application {
   size_t cookie_selection_ = 0;
   bool show_web_header_links_ = false;
   size_t settings_selection_ = 0;
-  size_t theme_selection_ = 0;
+  size_t settings_item_ = 0;
+  std::array<bool, 2> general_expanded_{};
+  std::array<bool, 3> interface_expanded_{};
+  std::array<bool, 5> device_expanded_{};
+  bool device_content_focused_ = false;
+  UiPreferences ui_preferences_{};
   WifiBackend wifi_;
   WifiSnapshot wifi_view_{};
   AudioBackend audio_;
   AudioSnapshot audio_view_{};
   BluetoothBackend bluetooth_;
   BluetoothSnapshot bluetooth_view_{};
+  HardwareSnapshot hardware_view_{};
   WeatherBackend weather_;
   WeatherSnapshot weather_view_{};
   size_t bluetooth_selection_ = 0;
@@ -1836,6 +2088,11 @@ class Application {
   bool audio_page_ = false;
   bool bluetooth_page_ = false;
   bool audio_picker_ = false;
+  bool wifi_picker_ = false;
+  bool bluetooth_picker_ = false;
+  bool hardware_details_open_ = false;
+  size_t storage_selection_ = 0;
+  size_t peripheral_selection_ = 0;
   size_t wifi_selection_ = 0;
   size_t audio_selection_ = 0;
   size_t audio_picker_selection_ = 0;
